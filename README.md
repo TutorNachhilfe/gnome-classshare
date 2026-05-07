@@ -21,6 +21,7 @@ python3 gnome-classshare.py
 3. Schüler scannt den QR-Code und sieht die Seite **„Aufgabe abgeben“**
 4. Datei auswählen + **Abgeben**
 5. Datei landet automatisch in `~/Abgaben/`
+6. In der Liste kann jede eingegangene Datei über **Öffnen** direkt mit der Standard-App geöffnet werden
 
 ## Upload-Verhalten
 
