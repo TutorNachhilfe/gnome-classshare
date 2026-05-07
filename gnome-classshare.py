@@ -410,7 +410,8 @@ class ClassShareWindow(Adw.ApplicationWindow):
 
         for opener in ("gio", "xdg-open"):
             try:
-                subprocess.Popen([opener, "open", str(filepath)] if opener == "gio" else [opener, str(filepath)])
+                command = [opener, "open", str(filepath)] if opener == "gio" else [opener, str(filepath)]
+                subprocess.Popen(command)
                 return
             except OSError:
                 continue
