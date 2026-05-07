@@ -24,7 +24,7 @@ class SingleFileHandler(SimpleHTTPRequestHandler):
         self.route_name = route_name
         super().__init__(*args, **kwargs)
 
-    def log_message(self, format, *args):
+    def log_message(self, fmt, *args):
         return
 
     def do_GET(self):
