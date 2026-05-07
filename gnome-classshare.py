@@ -35,10 +35,10 @@ def get_local_ip() -> str:
 
 
 def safe_unique_path(directory: Path, filename: str) -> Path:
-    cleaned = Path(filename)
-    base = cleaned.name
-    stem = cleaned.stem
-    suffix = cleaned.suffix
+    path_obj = Path(filename)
+    base = path_obj.name
+    stem = path_obj.stem
+    suffix = path_obj.suffix
     target = directory / base
     counter = 2
     while target.exists():
@@ -206,7 +206,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             self._send_html("<h1>Ungültige Anfrage</h1>", status=HTTPStatus.BAD_REQUEST)
             return
         if content_length > self.max_upload_size:
-            self._send_html("<h1>Datei ist zu groß</h1>", status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            self._send_html("<h1>Datei ist zu groß (max. 100 MB)</h1>", status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             return
 
         body = self.rfile.read(content_length)
@@ -237,7 +237,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             self._send_html("<h1>Datei konnte nicht gespeichert werden</h1>", status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.state.received.append((target.name, timestamp))
 
         if self.on_upload:
