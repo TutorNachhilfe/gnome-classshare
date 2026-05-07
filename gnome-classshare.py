@@ -35,9 +35,10 @@ def get_local_ip() -> str:
 
 
 def safe_unique_path(directory: Path, filename: str) -> Path:
-    base = Path(filename).name
-    stem = Path(base).stem
-    suffix = Path(base).suffix
+    cleaned = Path(filename)
+    base = cleaned.name
+    stem = cleaned.stem
+    suffix = cleaned.suffix
     target = directory / base
     counter = 2
     while target.exists():
@@ -196,7 +197,11 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             return
 
         boundary = header.get_param("boundary")
-        content_length = int(self.headers.get("Content-Length", "0"))
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._send_html("<h1>Ungültige Anfrage</h1>", status=HTTPStatus.BAD_REQUEST)
+            return
         if not boundary or content_length <= 0:
             self._send_html("<h1>Ungültige Anfrage</h1>", status=HTTPStatus.BAD_REQUEST)
             return

@@ -34,3 +34,4 @@ python3 gnome-classshare.py
 ## Hinweis zum Netzwerk
 
 Der integrierte HTTP-Server bindet an alle lokalen Interfaces (`0.0.0.0`), damit iPads im selben Netzwerk zugreifen können.
+Nutze die App daher nur in vertrauenswürdigen (z. B. schulischen) Netzwerken, da keine Authentifizierung aktiviert ist.
