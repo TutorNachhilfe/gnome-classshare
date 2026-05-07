@@ -24,6 +24,9 @@ try:
 except ImportError:  # pragma: no cover
     qrcode = None
 
+MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
+CONTENT_TOO_LARGE = getattr(HTTPStatus, "CONTENT_TOO_LARGE", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+
 
 def get_local_ip() -> str:
     try:
@@ -61,7 +64,7 @@ class ClassShareState:
 class ClassShareHandler(BaseHTTPRequestHandler):
     state = None
     on_upload = None
-    max_upload_size = 100 * 1024 * 1024
+    max_upload_size = MAX_UPLOAD_SIZE_BYTES
 
     def log_message(self, fmt, *args):
         return
@@ -206,7 +209,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             self._send_html("<h1>Ungültige Anfrage</h1>", status=HTTPStatus.BAD_REQUEST)
             return
         if content_length > self.max_upload_size:
-            self._send_html("<h1>Datei ist zu groß (max. 100 MB)</h1>", status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            self._send_html("<h1>Datei ist zu groß (max. 100 MB)</h1>", status=CONTENT_TOO_LARGE)
             return
 
         body = self.rfile.read(content_length)
