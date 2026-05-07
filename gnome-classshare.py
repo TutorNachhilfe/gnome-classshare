@@ -2,6 +2,7 @@
 
 import io
 import socket
+import subprocess
 import threading
 from datetime import datetime
 from email.message import Message
@@ -402,8 +403,43 @@ class ClassShareWindow(Adw.ApplicationWindow):
             else:
                 self.collect_qr.set_paintable(None)
 
+    def _open_received_file(self, _btn, filepath: Path):
+        if not filepath.exists():
+            self.toast_overlay.add_toast(Adw.Toast(title=f"Datei nicht gefunden: {filepath.name}"))
+            return
+
+        missing_openers = True
+        last_error = None
+        for opener in ("gio", "xdg-open"):
+            try:
+                command = [opener, "open", str(filepath)] if opener == "gio" else [opener, str(filepath)]
+                subprocess.Popen(command)
+                return
+            except FileNotFoundError:
+                continue
+            except OSError as err:
+                missing_openers = False
+                last_error = err
+
+        if missing_openers:
+            message = "Weder gio noch xdg-open ist verfügbar"
+        elif last_error:
+            message = f"Konnte Datei nicht öffnen: {last_error.strerror or 'Unbekannter Fehler'}"
+        else:
+            message = "Konnte Datei nicht öffnen"
+        self.toast_overlay.add_toast(Adw.Toast(title=message))
+
     def on_upload_received(self, name, timestamp):
         row = Adw.ActionRow(title=name, subtitle=f"Eingegangen um {timestamp}")
+        filepath = self.state.upload_dir / name
+        if filepath.exists():
+            open_btn = Gtk.Button(icon_name="document-open-symbolic")
+            open_btn.add_css_class("flat")
+            open_btn.set_tooltip_text("Öffnen")
+            open_btn.set_valign(Gtk.Align.CENTER)
+            open_btn.connect("clicked", self._open_received_file, filepath)
+            row.add_suffix(open_btn)
+            row.set_activatable_widget(open_btn)
         self.listbox.append(row)
         self.toast_overlay.add_toast(Adw.Toast(title=f"📥 {name} eingegangen"))
         return False
