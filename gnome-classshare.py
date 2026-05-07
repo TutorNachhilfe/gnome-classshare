@@ -206,7 +206,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
             self._toast("Kein LAN-Netzwerk gefunden")
             return
 
-        port = self._find_free_port(8080)
+        port = self._find_free_port(8080, ip)
         route_name = os.path.basename(file_path)
         quoted_route = quote(route_name)
         url = f"http://{ip}:{port}/{quoted_route}"
@@ -214,7 +214,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
         handler = partial(SingleFileHandler, file_path=file_path, route_name=route_name)
 
         try:
-            self.server = ThreadingHTTPServer(("", port), handler)
+            self.server = ThreadingHTTPServer((ip, port), handler)
         except OSError as exc:
             self._toast(f"Serverstart fehlgeschlagen: {exc}")
             return
@@ -257,13 +257,13 @@ class ClassShareWindow(Adw.ApplicationWindow):
             self.temp_dir = None
             self.qr_path = None
 
-    def _find_free_port(self, start_port):
+    def _find_free_port(self, start_port, host):
         port = start_port
-        while port < 65535:
+        while port <= 65535:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 try:
-                    sock.bind(("", port))
+                    sock.bind((host, port))
                     return port
                 except OSError:
                     port += 1

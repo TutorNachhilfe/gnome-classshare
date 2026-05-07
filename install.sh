@@ -11,7 +11,7 @@ if command -v pip3 >/dev/null 2>&1; then
 elif command -v pip >/dev/null 2>&1; then
   PIP_CMD="pip"
 else
-  echo "pip/pip3 nicht gefunden. Bitte Python-Paketmanager installieren." >&2
+  echo "pip/pip3 not found. Bitte Python-Paketmanager installieren." >&2
   exit 1
 fi
 
@@ -29,4 +29,4 @@ Terminal=false
 Categories=GNOME;GTK;Education;Utility;
 EOF
 
-echo "Installation abgeschlossen: $DESKTOP_FILE"
+echo "Installation complete / Installation abgeschlossen: $DESKTOP_FILE"
