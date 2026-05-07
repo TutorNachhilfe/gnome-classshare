@@ -4,11 +4,13 @@ import io
 import socket
 import threading
 from datetime import datetime
+from email.message import Message
+from email.parser import BytesParser
+from email.policy import default as email_default_policy
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
-import cgi
 
 import gi
 
@@ -19,7 +21,7 @@ from gi.repository import Adw, Gdk, GdkPixbuf, GLib, Gtk  # noqa: E402
 
 try:
     import qrcode
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     qrcode = None
 
 
@@ -185,20 +187,42 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             self._send_html("<h1>Abgabe ist nicht aktiv</h1>", status=HTTPStatus.SERVICE_UNAVAILABLE)
             return
 
-        ctype, _ = cgi.parse_header(self.headers.get("Content-Type", ""))
-        if ctype != "multipart/form-data":
+        content_type = self.headers.get("Content-Type", "")
+        header = Message()
+        header["content-type"] = content_type
+        if header.get_content_type() != "multipart/form-data":
             self._send_html("<h1>Ungültige Anfrage</h1>", status=HTTPStatus.BAD_REQUEST)
             return
 
-        form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"}, keep_blank_values=False)
-        file_item = form["file"] if "file" in form else None
-        if file_item is None or not getattr(file_item, "filename", None):
+        boundary = header.get_param("boundary")
+        content_length = int(self.headers.get("Content-Length", "0"))
+        if not boundary or content_length <= 0:
+            self._send_html("<h1>Ungültige Anfrage</h1>", status=HTTPStatus.BAD_REQUEST)
+            return
+
+        body = self.rfile.read(content_length)
+        mime_blob = (
+            f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8")
+            + body
+        )
+        message = BytesParser(policy=email_default_policy).parsebytes(mime_blob)
+
+        uploaded_name = None
+        uploaded_data = None
+        for part in message.iter_parts():
+            if part.get_param("name", header="content-disposition") != "file":
+                continue
+            uploaded_name = part.get_filename()
+            uploaded_data = part.get_payload(decode=True) or b""
+            break
+
+        if not uploaded_name:
             self._send_html("<h1>Keine Datei ausgewählt</h1>", status=HTTPStatus.BAD_REQUEST)
             return
 
-        target = safe_unique_path(self.state.upload_dir, file_item.filename)
+        target = safe_unique_path(self.state.upload_dir, uploaded_name)
         with open(target, "wb") as out:
-            out.write(file_item.file.read())
+            out.write(uploaded_data)
 
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.state.received.append((target.name, timestamp))
