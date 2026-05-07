@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover
 def get_local_ip() -> str:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.connect(("8.8.8.8", 80))
+            sock.connect(("10.255.255.255", 1))
             return sock.getsockname()[0]
     except OSError:
         return "127.0.0.1"
@@ -60,8 +60,9 @@ class ClassShareState:
 class ClassShareHandler(BaseHTTPRequestHandler):
     state = None
     on_upload = None
+    max_upload_size = 100 * 1024 * 1024
 
-    def log_message(self, format, *args):
+    def log_message(self, fmt, *args):
         return
 
     def _send_html(self, html: str, status=HTTPStatus.OK):
@@ -199,6 +200,9 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         if not boundary or content_length <= 0:
             self._send_html("<h1>Ungültige Anfrage</h1>", status=HTTPStatus.BAD_REQUEST)
             return
+        if content_length > self.max_upload_size:
+            self._send_html("<h1>Datei ist zu groß</h1>", status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
 
         body = self.rfile.read(content_length)
         mime_blob = (
@@ -221,8 +225,12 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             return
 
         target = safe_unique_path(self.state.upload_dir, uploaded_name)
-        with open(target, "wb") as out:
-            out.write(uploaded_data)
+        try:
+            with open(target, "wb") as out:
+                out.write(uploaded_data)
+        except OSError:
+            self._send_html("<h1>Datei konnte nicht gespeichert werden</h1>", status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
 
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.state.received.append((target.name, timestamp))

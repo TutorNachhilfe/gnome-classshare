@@ -25,7 +25,12 @@ python3 gnome-classshare.py
 ## Upload-Verhalten
 
 - Upload per `POST /upload` (`multipart/form-data`)
+- Max. Upload-Größe: 100 MB pro Datei
 - Original-Dateiname bleibt erhalten
 - Bei Namenskonflikten wird nummeriert, z. B. `hausaufgabe_2.pdf`
 - Neue Uploads erscheinen sofort in der Liste im App-Fenster
 - Pro neuer Datei erscheint ein Toast: `📥 <datei> eingegangen`
+
+## Hinweis zum Netzwerk
+
+Der integrierte HTTP-Server bindet an alle lokalen Interfaces (`0.0.0.0`), damit iPads im selben Netzwerk zugreifen können.
