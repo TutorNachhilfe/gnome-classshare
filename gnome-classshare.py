@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import threading
+from html import escape
 from datetime import datetime
 from email.message import Message
 from email.parser import BytesParser
@@ -13,14 +14,14 @@ from email.policy import default as email_default_policy
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gdk, GdkPixbuf, GLib, Gio, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, GdkPixbuf, GLib, Gio, Gtk, Pango  # noqa: E402
 
 try:
     import qrcode
@@ -59,6 +60,7 @@ def safe_unique_path(directory: Path, filename: str) -> Path:
 
 class ClassShareState:
     def __init__(self):
+        self.selected_files = []
         self.selected_file = None
         self.collecting_active = False
         self.upload_dir = Path.home() / "Abgaben"
@@ -85,9 +87,17 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
         if path == "/download":
-            self._handle_download()
+            requested_name = parse_qs(parsed_url.query).get("file", [None])[0]
+            if requested_name is None:
+                self._redirect("/files")
+                return
+            self._handle_download(requested_name)
+            return
+        if path == "/files":
+            self._handle_files_page()
             return
         if path == "/":
             self._handle_upload_page()
@@ -101,13 +111,158 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             return
         self._send_html("<h1>Nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
 
-    def _handle_download(self):
-        selected = self.state.selected_file
-        if not selected or not Path(selected).exists():
+    def _redirect(self, location: str):
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _selected_paths(self):
+        selected_files = list(getattr(self.state, "selected_files", []))
+        if not selected_files and self.state.selected_file:
+            selected_files = [self.state.selected_file]
+        return selected_files
+
+    def _format_size(self, size_bytes: int) -> str:
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+        if size_bytes < 1024 * 1024:
+            return f"{round(size_bytes / 1024)} KB"
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+    def _handle_files_page(self):
+        files = []
+        for selected in self._selected_paths():
+            try:
+                file_path = Path(selected)
+                if file_path.exists() and file_path.is_file():
+                    files.append(file_path)
+            except (TypeError, ValueError):
+                continue
+
+        if not files:
             self._send_html("<h1>Keine Datei verfügbar</h1>", status=HTTPStatus.NOT_FOUND)
             return
 
-        file_path = Path(selected)
+        rows = []
+        for file_path in files:
+            filename = file_path.name
+            file_size = self._format_size(file_path.stat().st_size)
+            download_link = f"/download?file={quote(filename)}"
+            rows.append(
+                f"""
+                <li class="file-row">
+                  <span class="file-name">📄 {escape(filename)}</span>
+                  <span class="file-meta">({file_size})</span>
+                  <a class="download-btn" href="{download_link}">Herunterladen</a>
+                </li>
+                """
+            )
+
+        self._send_html(
+            f"""
+            <!doctype html>
+            <html lang="de">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <title>Verfügbare Dateien</title>
+              <style>
+                body {{
+                  margin: 0;
+                  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                  background: #f5f6f8;
+                  color: #1f2937;
+                  min-height: 100vh;
+                  display: grid;
+                  place-items: center;
+                  padding: 1rem;
+                }}
+                .card {{
+                  width: min(720px, calc(100vw - 2rem));
+                  background: #fff;
+                  border-radius: 20px;
+                  padding: 1.5rem;
+                  box-shadow: 0 10px 24px rgba(0,0,0,.08);
+                }}
+                h1 {{
+                  margin: 0 0 .5rem 0;
+                  font-size: clamp(1.4rem, 3vw, 2rem);
+                }}
+                .subtitle {{
+                  margin: 0 0 1rem 0;
+                  color: #6b7280;
+                }}
+                .file-list {{
+                  list-style: none;
+                  padding: 0;
+                  margin: 0;
+                  display: grid;
+                  gap: .75rem;
+                }}
+                .file-row {{
+                  display: grid;
+                  grid-template-columns: 1fr auto auto;
+                  gap: .75rem;
+                  align-items: center;
+                  border: 1px solid #e5e7eb;
+                  border-radius: 14px;
+                  padding: .9rem;
+                  background: #fff;
+                }}
+                .file-name {{
+                  overflow: hidden;
+                  text-overflow: ellipsis;
+                  white-space: nowrap;
+                }}
+                .file-meta {{
+                  color: #6b7280;
+                  font-size: .95rem;
+                }}
+                .download-btn {{
+                  text-decoration: none;
+                  background: #2563eb;
+                  color: white;
+                  border-radius: 10px;
+                  padding: .5rem .85rem;
+                  font-weight: 600;
+                }}
+              </style>
+            </head>
+            <body>
+              <main class="card">
+                <h1>📁 Verfügbare Dateien</h1>
+                <p class="subtitle">Bitte Datei auswählen und herunterladen.</p>
+                <ul class="file-list">
+                  {''.join(rows)}
+                </ul>
+              </main>
+            </body>
+            </html>
+            """
+        )
+
+    def _handle_download(self, requested_name: str):
+        if not requested_name:
+            self._send_html("<h1>Ungültiger Dateiname</h1>", status=HTTPStatus.BAD_REQUEST)
+            return
+
+        safe_name = Path(requested_name).name
+        if safe_name != requested_name:
+            self._send_html("<h1>Ungültiger Dateiname</h1>", status=HTTPStatus.BAD_REQUEST)
+            return
+
+        file_path = None
+        for selected in self._selected_paths():
+            candidate = Path(selected)
+            if candidate.name == safe_name and candidate.exists() and candidate.is_file():
+                file_path = candidate
+                break
+
+        if file_path is None:
+            self._send_html("<h1>Datei nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
+            return
+
         data = file_path.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/octet-stream")
@@ -497,27 +652,124 @@ class ClassShareWindow(Adw.ApplicationWindow):
 
     def _setup_drag_drop(self):
         try:
-            drop_target = Gtk.DropTarget.new(Gio.File.__gtype__, Gdk.DragAction.COPY)
-            drop_target.connect("drop", self._on_drop)
-            drop_target.connect("enter", self._on_drag_enter)
-            drop_target.connect("leave", self._on_drag_leave)
-            self.add_controller(drop_target)
+            drop_types = [Gio.File.__gtype__]
+            if hasattr(Gdk, "FileList"):
+                drop_types.append(Gdk.FileList.__gtype__)
+            for drop_type in drop_types:
+                drop_target = Gtk.DropTarget.new(drop_type, Gdk.DragAction.COPY)
+                drop_target.connect("drop", self._on_drop)
+                drop_target.connect("enter", self._on_drag_enter)
+                drop_target.connect("leave", self._on_drag_leave)
+                self.add_controller(drop_target)
         except Exception:
             pass
+
+    def _set_selected_files(self, files):
+        deduplicated = []
+        seen = set()
+        for selected in files:
+            if not selected:
+                continue
+            text_path = str(selected)
+            if text_path in seen:
+                continue
+            seen.add(text_path)
+            deduplicated.append(text_path)
+        self.state.selected_files = deduplicated
+        self.state.selected_file = deduplicated[0] if deduplicated else None
+        self._refresh_selected_files_ui()
+        self._update_qr_images()
+
+    def _add_selected_files(self, files):
+        self._set_selected_files([*self.state.selected_files, *files])
+
+    def _remove_selected_file(self, file_path):
+        self._set_selected_files([path for path in self.state.selected_files if path != file_path])
+        self.toast_overlay.add_toast(
+            Adw.Toast(title=f"🗑️ {Path(file_path).name} entfernt")
+        )
+
+    def _refresh_selected_files_ui(self):
+        count = len(self.state.selected_files)
+        self.selected_count_label.set_text(f"{count} Datei(en) ausgewählt")
+
+        child = self.selected_files_listbox.get_first_child()
+        while child:
+            next_child = child.get_next_sibling()
+            self.selected_files_listbox.remove(child)
+            child = next_child
+
+        for file_path in self.state.selected_files:
+            row = Gtk.ListBoxRow()
+            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            row_box.set_margin_top(6)
+            row_box.set_margin_bottom(6)
+            row_box.set_margin_start(8)
+            row_box.set_margin_end(8)
+
+            label = Gtk.Label(label=Path(file_path).name)
+            label.set_xalign(0)
+            label.set_hexpand(True)
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            label.set_tooltip_text(file_path)
+            row_box.append(label)
+
+            remove_btn = Gtk.Button(label="✕")
+            remove_btn.add_css_class("flat")
+            remove_btn.set_tooltip_text("Datei entfernen")
+            remove_btn.connect("clicked", self._on_remove_selected_file, file_path)
+            row_box.append(remove_btn)
+
+            row.set_child(row_box)
+            self.selected_files_listbox.append(row)
+
+    def _on_remove_selected_file(self, _btn, file_path):
+        self._remove_selected_file(file_path)
+
+    def _extract_paths_from_file_model(self, files_model):
+        paths = []
+        if files_model is None:
+            return paths
+        if hasattr(files_model, "get_n_items") and hasattr(files_model, "get_item"):
+            for index in range(files_model.get_n_items()):
+                file = files_model.get_item(index)
+                if isinstance(file, Gio.File):
+                    path = file.get_path()
+                    if path:
+                        paths.append(path)
+            return paths
+        try:
+            for file in files_model:
+                if isinstance(file, Gio.File):
+                    path = file.get_path()
+                    if path:
+                        paths.append(path)
+        except TypeError:
+            pass
+        return paths
 
     def _on_drop(self, _target, value, _x, _y):
         try:
             if isinstance(value, Gio.File):
                 path = value.get_path()
                 if path:
-                    self.state.selected_file = path
-                    self.selected_label.set_text(f"Ausgewählt: {Path(path).name}")
-                    self._update_qr_images()
+                    self._add_selected_files([path])
                     self.send_btn.set_active(True)
                     self.collect_btn.set_active(False)
                     self.stack.set_visible_child_name("send")
                     self.toast_overlay.add_toast(
                         Adw.Toast(title=f"📂 {Path(path).name} per Drag & Drop geladen")
+                    )
+                    return True
+            if hasattr(Gdk, "FileList") and isinstance(value, Gdk.FileList):
+                paths = self._extract_paths_from_file_model(value.get_files())
+                if paths:
+                    self._add_selected_files(paths)
+                    self.send_btn.set_active(True)
+                    self.collect_btn.set_active(False)
+                    self.stack.set_visible_child_name("send")
+                    self.toast_overlay.add_toast(
+                        Adw.Toast(title=f"📂 {len(paths)} Datei(en) per Drag & Drop geladen")
                     )
                     return True
         except Exception:
@@ -618,17 +870,26 @@ class ClassShareWindow(Adw.ApplicationWindow):
     def _build_send_page(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
 
-        self.selected_label = Gtk.Label(label="Keine Datei gewählt")
-        self.selected_label.set_xalign(0)
-        box.append(self.selected_label)
+        self.selected_count_label = Gtk.Label(label="0 Datei(en) ausgewählt")
+        self.selected_count_label.set_xalign(0)
+        box.append(self.selected_count_label)
 
         file_btn = Gtk.Button(label="Datei wählen")
         file_btn.connect("clicked", self._choose_file)
         box.append(file_btn)
 
+        self.selected_files_listbox = Gtk.ListBox()
+        self.selected_files_listbox.add_css_class("boxed-list")
+        self.selected_files_listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+        files_scrolled = Gtk.ScrolledWindow()
+        files_scrolled.set_min_content_height(140)
+        files_scrolled.set_child(self.selected_files_listbox)
+        box.append(files_scrolled)
+
         self.send_qr = Gtk.Picture()
         box.append(self.send_qr)
 
+        self._refresh_selected_files_ui()
         return box
 
     def _build_collect_page(self):
@@ -672,19 +933,23 @@ class ClassShareWindow(Adw.ApplicationWindow):
             "Auswählen",
             "Abbrechen",
         )
+        dialog.set_select_multiple(True)
         dialog.connect("response", self._on_file_response)
         dialog.show()
 
     def _on_file_response(self, dialog, response):
         if response == Gtk.ResponseType.ACCEPT:
-            file = dialog.get_file()
-            if file:
-                path = file.get_path()
-                self.state.selected_file = path
-                self.selected_label.set_text(f"Ausgewählt: {Path(path).name}")
-                self._update_qr_images()
+            paths = self._extract_paths_from_file_model(dialog.get_files())
+            if not paths:
+                file = dialog.get_file()
+                if file:
+                    path = file.get_path()
+                    if path:
+                        paths = [path]
+            if paths:
+                self._set_selected_files(paths)
                 self.toast_overlay.add_toast(
-                    Adw.Toast(title=f"📂 {Path(path).name} ausgewählt")
+                    Adw.Toast(title=f"📂 {len(paths)} Datei(en) ausgewählt")
                 )
         dialog.destroy()
 
@@ -707,7 +972,14 @@ class ClassShareWindow(Adw.ApplicationWindow):
     def _url_for(self, mode):
         host = self.state.server_ip
         port = self.state.server_port
-        suffix = "/download" if mode == "send" else "/"
+        if mode == "send":
+            if len(self.state.selected_files) == 1:
+                filename = Path(self.state.selected_files[0]).name
+                suffix = f"/download?file={quote(filename)}"
+            else:
+                suffix = "/files"
+        else:
+            suffix = "/"
         return f"http://{host}:{port}{suffix}"
 
     def _set_qr(self, picture, url):
@@ -727,7 +999,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
 
     def _update_qr_images(self):
         if self.state.server_port:
-            if self.state.selected_file:
+            if self.state.selected_files:
                 self._set_qr(self.send_qr, self._url_for("send"))
             else:
                 self.send_qr.set_paintable(None)

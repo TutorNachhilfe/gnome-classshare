@@ -11,9 +11,10 @@ python3 gnome-classshare.py
 ## Modi
 
 ### Senden
-1. **Datei wählen**
+1. **Datei(en) wählen** (Mehrfachauswahl möglich)
 2. QR-Code wird angezeigt
-3. Schüler scannt den Code und Safari lädt die Datei direkt herunter
+3. Bei einer Datei: Schüler lädt direkt herunter
+4. Bei mehreren Dateien: Schüler sieht eine Download-Liste
 
 ### Einsammeln
 1. **Einsammeln** öffnen
