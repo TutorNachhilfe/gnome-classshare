@@ -118,7 +118,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _selected_paths(self):
-        selected_files = list(getattr(self.state, "selected_files", []))
+        selected_files = list(self.state.selected_files)
         if not selected_files and self.state.selected_file:
             selected_files = [self.state.selected_file]
         return selected_files
@@ -243,7 +243,11 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         )
 
     def _handle_download(self, requested_name: str):
-        if not requested_name:
+        if not requested_name or "\x00" in requested_name:
+            self._send_html("<h1>Ungültiger Dateiname</h1>", status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if "/" in requested_name or "\\" in requested_name:
             self._send_html("<h1>Ungültiger Dateiname</h1>", status=HTTPStatus.BAD_REQUEST)
             return
 
@@ -973,6 +977,8 @@ class ClassShareWindow(Adw.ApplicationWindow):
         host = self.state.server_ip
         port = self.state.server_port
         if mode == "send":
+            if not self.state.selected_files:
+                return f"http://{host}:{port}/files"
             if len(self.state.selected_files) == 1:
                 filename = Path(self.state.selected_files[0]).name
                 suffix = f"/download?file={quote(filename)}"
