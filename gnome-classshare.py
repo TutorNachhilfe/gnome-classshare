@@ -278,6 +278,14 @@ class ClassShareWindow(Adw.ApplicationWindow):
         self.set_size_request(600, 400)
         self.set_deletable(True)
 
+        # App-Icon für den Fenstermanager setzen
+        try:
+            icon_path = Path(__file__).parent / "icons" / "classshare.svg"
+            if icon_path.exists():
+                self.get_application().set_default_icon_name("gnome-classshare")
+        except Exception:
+            pass
+
         # Toast overlay wraps everything
         self.toast_overlay = Adw.ToastOverlay()
         self.set_content(self.toast_overlay)
@@ -795,6 +803,7 @@ class ClassShareApp(Adw.Application):
 
         self._start_server()
         self._ensure_desktop_file()
+        self._install_icon()
         self.win = ClassShareWindow(self)
         self.win.present()
 
@@ -821,6 +830,29 @@ class ClassShareApp(Adw.Application):
             return self.win.on_upload_received(name, timestamp)
         return False
 
+    def _install_icon(self):
+        """Kopiert das Icon in ~/.local/share/icons/hicolor/scalable/apps/"""
+        try:
+            import shutil
+            icon_src = Path(__file__).parent / "icons" / "classshare.svg"
+            if not icon_src.exists():
+                return
+            icon_dir = Path.home() / ".local" / "share" / "icons" / "hicolor" / "scalable" / "apps"
+            icon_dir.mkdir(parents=True, exist_ok=True)
+            icon_dst = icon_dir / "gnome-classshare.svg"
+            shutil.copy2(icon_src, icon_dst)
+            # Icon-Cache aktualisieren (falls gtk-update-icon-cache verfügbar)
+            try:
+                subprocess.Popen(
+                    ["gtk-update-icon-cache", "-f", "-t", str(Path.home() / ".local" / "share" / "icons" / "hicolor")],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except FileNotFoundError:
+                pass
+        except Exception:
+            pass
+
     def _ensure_desktop_file(self):
         """Create a .desktop file so the Unity launcher badge API can find the app."""
         try:
@@ -834,7 +866,7 @@ class ClassShareApp(Adw.Application):
                     "Name=ClassShare\n"
                     "Comment=Dateien teilen und einsammeln im Schulnetz\n"
                     f"Exec={sys.executable} {exec_path}\n"
-                    "Icon=application-x-executable\n"
+                    "Icon=gnome-classshare\n"
                     "Terminal=false\n"
                     "Type=Application\n"
                     "Categories=Education;Network;\n"
