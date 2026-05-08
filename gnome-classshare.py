@@ -4,6 +4,7 @@ import io
 import json
 import socket
 import subprocess
+import sys
 import threading
 from datetime import datetime
 from email.message import Message
@@ -827,14 +828,13 @@ class ClassShareApp(Adw.Application):
             desktop_dir.mkdir(parents=True, exist_ok=True)
             desktop_path = desktop_dir / APP_DESKTOP_ID
             if not desktop_path.exists():
-                import sys
                 exec_path = Path(sys.argv[0]).resolve()
                 content = (
                     "[Desktop Entry]\n"
                     "Name=ClassShare\n"
                     "Comment=Dateien teilen und einsammeln im Schulnetz\n"
-                    f"Exec=python3 {exec_path}\n"
-                    "Icon=edu.tuto.classshare\n"
+                    f"Exec={sys.executable} {exec_path}\n"
+                    "Icon=application-x-executable\n"
                     "Terminal=false\n"
                     "Type=Application\n"
                     "Categories=Education;Network;\n"
