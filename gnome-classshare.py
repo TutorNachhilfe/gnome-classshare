@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 import io
+import json
 import socket
 import subprocess
+import sys
 import threading
 from datetime import datetime
 from email.message import Message
@@ -18,7 +20,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gdk, GdkPixbuf, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, GdkPixbuf, GLib, Gio, Gtk  # noqa: E402
 
 try:
     import qrcode
@@ -27,6 +29,10 @@ except ImportError:  # pragma: no cover
 
 MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
 CONTENT_TOO_LARGE = getattr(HTTPStatus, "CONTENT_TOO_LARGE", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+
+CONFIG_DIR = Path.home() / ".config" / "gnome-classshare"
+SETTINGS_FILE = CONFIG_DIR / "settings.json"
+APP_DESKTOP_ID = "gnome-classshare.desktop"
 
 
 def get_local_ip() -> str:
@@ -265,18 +271,30 @@ class ClassShareWindow(Adw.ApplicationWindow):
         super().__init__(application=app)
         self.app = app
         self.state = app.state
-        self.set_title("GNOME ClassShare")
-        self.set_default_size(760, 640)
+        self._submission_count = 0
+        self._is_fullscreen = False
 
+        self.set_title("ClassShare")
+        self.set_size_request(600, 400)
+        self.set_deletable(True)
+
+        # Toast overlay wraps everything
         self.toast_overlay = Adw.ToastOverlay()
         self.set_content(self.toast_overlay)
+
+        # ToolbarView integrates the HeaderBar properly
+        toolbar_view = Adw.ToolbarView()
+        self.toast_overlay.set_child(toolbar_view)
+
+        header = self._build_header()
+        toolbar_view.add_top_bar(header)
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         root.set_margin_top(12)
         root.set_margin_bottom(12)
         root.set_margin_start(12)
         root.set_margin_end(12)
-        self.toast_overlay.set_child(root)
+        toolbar_view.set_content(root)
 
         top = Gtk.Box(spacing=6)
         self.send_btn = Gtk.ToggleButton(label="Senden")
@@ -295,7 +313,299 @@ class ClassShareWindow(Adw.ApplicationWindow):
         self.stack.add_titled(self._build_send_page(), "send", "Senden")
         self.stack.add_titled(self._build_collect_page(), "collect", "Einsammeln")
 
+        # Load saved window size
+        self._load_settings()
+
+        # Save size on close
+        self.connect("close-request", self._on_close_request)
+
+        # Register window actions + keyboard shortcuts
+        self._setup_actions()
+
+        # Drag & Drop support
+        self._setup_drag_drop()
+
         self._update_qr_images()
+
+    # ------------------------------------------------------------------ header
+
+    def _build_header(self):
+        header = Adw.HeaderBar()
+
+        # Hamburger menu (start side)
+        menu = Gio.Menu()
+        menu.append("Über ClassShare", "win.show-about")
+        menu.append("Tastenkürzel", "win.show-shortcuts")
+        menu_btn = Gtk.MenuButton()
+        menu_btn.set_icon_name("open-menu-symbolic")
+        menu_btn.set_menu_model(menu)
+        menu_btn.set_tooltip_text("Menü")
+        header.pack_start(menu_btn)
+
+        # Fullscreen toggle button (end side)
+        self._fullscreen_btn = Gtk.Button()
+        self._fullscreen_btn.set_icon_name("view-fullscreen-symbolic")
+        self._fullscreen_btn.set_tooltip_text("Vollbild (F11)")
+        self._fullscreen_btn.connect("clicked", self._toggle_fullscreen)
+        header.pack_end(self._fullscreen_btn)
+
+        return header
+
+    # ---------------------------------------------------- actions + shortcuts
+
+    def _setup_actions(self):
+        actions = [
+            ("toggle-fullscreen", self._toggle_fullscreen),
+            ("open-file", self._choose_file),
+            ("show-about", self._show_about),
+            ("show-shortcuts", self._show_shortcuts),
+            ("close", self._close_window),
+        ]
+        for name, callback in actions:
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", callback)
+            self.add_action(action)
+
+        app = self.get_application()
+        if app:
+            app.set_accels_for_action("win.toggle-fullscreen", ["F11"])
+            app.set_accels_for_action("win.open-file", ["<Primary>o"])
+            app.set_accels_for_action("win.show-shortcuts", ["<Primary>question"])
+            app.set_accels_for_action("win.close", ["<Primary>w"])
+            app.set_accels_for_action("win.show-about", ["<Primary>F1"])
+
+    # ---------------------------------------------------- fullscreen
+
+    def _toggle_fullscreen(self, *_):
+        self._is_fullscreen = not self._is_fullscreen
+        if self._is_fullscreen:
+            self.fullscreen()
+            self._fullscreen_btn.set_icon_name("view-restore-symbolic")
+        else:
+            self.unfullscreen()
+            self._fullscreen_btn.set_icon_name("view-fullscreen-symbolic")
+
+    def _close_window(self, *_):
+        self.close()
+
+    # ---------------------------------------------------- about dialog
+
+    def _show_about(self, *_):
+        try:
+            dialog = Adw.AboutDialog(
+                application_name="ClassShare",
+                version="1.0",
+                comments="Dateien teilen und einsammeln im Schulnetz",
+                license_type=Gtk.License.GPL_3_0,
+                developers=["GitHub Copilot (KI)"],
+                website="https://github.com/TutorNachhilfe/gnome-classshare",
+                issue_url="https://github.com/TutorNachhilfe/gnome-classshare/issues",
+            )
+            dialog.present(self)
+            return
+        except AttributeError:
+            pass
+        try:
+            win = Adw.AboutWindow(
+                transient_for=self,
+                application_name="ClassShare",
+                version="1.0",
+                comments="Dateien teilen und einsammeln im Schulnetz",
+                license_type=Gtk.License.GPL_3_0,
+                developers=["GitHub Copilot (KI)"],
+                website="https://github.com/TutorNachhilfe/gnome-classshare",
+            )
+            win.present()
+        except Exception:
+            pass
+
+    # ---------------------------------------------------- shortcuts window
+
+    def _show_shortcuts(self, *_):
+        try:
+            xml = """<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <object class="GtkShortcutsWindow" id="win">
+    <property name="modal">1</property>
+    <child>
+      <object class="GtkShortcutsSection">
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title">Datei</property>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Datei öffnen</property>
+                <property name="accelerator">&lt;Primary&gt;o</property>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title">Fenster</property>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Vollbild</property>
+                <property name="accelerator">F11</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Fenster schließen</property>
+                <property name="accelerator">&lt;Primary&gt;w</property>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title">Hilfe</property>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Tastenkürzel anzeigen</property>
+                <property name="accelerator">&lt;Primary&gt;question</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Über ClassShare</property>
+                <property name="accelerator">&lt;Primary&gt;F1</property>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+  </object>
+</interface>"""
+            builder = Gtk.Builder.new_from_string(xml, -1)
+            shortcuts_win = builder.get_object("win")
+            shortcuts_win.set_transient_for(self)
+            shortcuts_win.present()
+        except Exception:
+            pass
+
+    # ---------------------------------------------------- drag & drop
+
+    def _setup_drag_drop(self):
+        try:
+            drop_target = Gtk.DropTarget.new(Gio.File.__gtype__, Gdk.DragAction.COPY)
+            drop_target.connect("drop", self._on_drop)
+            drop_target.connect("enter", self._on_drag_enter)
+            drop_target.connect("leave", self._on_drag_leave)
+            self.add_controller(drop_target)
+        except Exception:
+            pass
+
+    def _on_drop(self, _target, value, _x, _y):
+        try:
+            if isinstance(value, Gio.File):
+                path = value.get_path()
+                if path:
+                    self.state.selected_file = path
+                    self.selected_label.set_text(f"Ausgewählt: {Path(path).name}")
+                    self._update_qr_images()
+                    self.send_btn.set_active(True)
+                    self.collect_btn.set_active(False)
+                    self.stack.set_visible_child_name("send")
+                    self.toast_overlay.add_toast(
+                        Adw.Toast(title=f"📂 {Path(path).name} per Drag & Drop geladen")
+                    )
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _on_drag_enter(self, _target, _x, _y):
+        self.add_css_class("drop-target")
+        return Gdk.DragAction.COPY
+
+    def _on_drag_leave(self, _target):
+        self.remove_css_class("drop-target")
+
+    # ---------------------------------------------------- settings persistence
+
+    def _load_settings(self):
+        try:
+            if SETTINGS_FILE.exists():
+                data = json.loads(SETTINGS_FILE.read_text())
+                w = data.get("width", 760)
+                h = data.get("height", 640)
+                self.set_default_size(w, h)
+                return
+        except Exception:
+            pass
+        self.set_default_size(760, 640)
+
+    def _save_settings(self):
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            data = {"width": self.get_width(), "height": self.get_height()}
+            SETTINGS_FILE.write_text(json.dumps(data))
+        except Exception:
+            pass
+
+    def _on_close_request(self, *_):
+        self._save_settings()
+        return False
+
+    # ---------------------------------------------------- launcher badge/progress
+
+    def _update_launcher_badge(self, count: int):
+        try:
+            conn = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+            params = GLib.Variant(
+                "(sa{sv})",
+                (
+                    f"application://{APP_DESKTOP_ID}",
+                    {
+                        "count": GLib.Variant("x", count),
+                        "count-visible": GLib.Variant("b", count > 0),
+                    },
+                ),
+            )
+            conn.call_sync(
+                "com.canonical.Unity",
+                "/com/canonical/Unity/LauncherEntry",
+                "com.canonical.Unity.LauncherEntry",
+                "Update",
+                params,
+                None,
+                Gio.DBusCallFlags.NONE,
+                -1,
+                None,
+            )
+        except Exception:
+            pass
+
+    def _update_launcher_progress(self, value: float, visible: bool):
+        try:
+            conn = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+            params = GLib.Variant(
+                "(sa{sv})",
+                (
+                    f"application://{APP_DESKTOP_ID}",
+                    {
+                        "progress": GLib.Variant("d", value),
+                        "progress-visible": GLib.Variant("b", visible),
+                    },
+                ),
+            )
+            conn.call_sync(
+                "com.canonical.Unity",
+                "/com/canonical/Unity/LauncherEntry",
+                "com.canonical.Unity.LauncherEntry",
+                "Update",
+                params,
+                None,
+                Gio.DBusCallFlags.NONE,
+                -1,
+                None,
+            )
+        except Exception:
+            pass
+
+    # ---------------------------------------------------- page builders
 
     def _build_send_page(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -333,6 +643,8 @@ class ClassShareWindow(Adw.ApplicationWindow):
 
         return box
 
+    # ---------------------------------------------------- interaction handlers
+
     def _on_mode_toggled(self, btn, mode):
         if not btn.get_active():
             return
@@ -344,7 +656,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
             self.stack.set_visible_child_name("collect")
         self._update_qr_images()
 
-    def _choose_file(self, _btn):
+    def _choose_file(self, *_):
         dialog = Gtk.FileChooserNative.new(
             "Datei auswählen",
             self,
@@ -363,6 +675,9 @@ class ClassShareWindow(Adw.ApplicationWindow):
                 self.state.selected_file = path
                 self.selected_label.set_text(f"Ausgewählt: {Path(path).name}")
                 self._update_qr_images()
+                self.toast_overlay.add_toast(
+                    Adw.Toast(title=f"📂 {Path(path).name} ausgewählt")
+                )
         dialog.destroy()
 
     def _toggle_collecting(self, _btn):
@@ -370,6 +685,16 @@ class ClassShareWindow(Adw.ApplicationWindow):
         label = "Abgabe stoppen" if self.state.collecting_active else "Abgabe starten"
         self.collect_start_btn.set_label(label)
         self._update_qr_images()
+        if self.state.collecting_active:
+            self._submission_count = 0
+            self.toast_overlay.add_toast(Adw.Toast(title="✅ Abgabe gestartet"))
+        else:
+            count = self._submission_count
+            self._update_launcher_badge(0)
+            self._update_launcher_progress(0.0, False)
+            self.toast_overlay.add_toast(
+                Adw.Toast(title=f"🛑 Abgabe gestoppt – {count} Abgabe(n) eingegangen")
+            )
 
     def _url_for(self, mode):
         host = self.state.server_ip
@@ -405,7 +730,9 @@ class ClassShareWindow(Adw.ApplicationWindow):
 
     def _open_received_file(self, _btn, filepath: Path):
         if not filepath.exists():
-            self.toast_overlay.add_toast(Adw.Toast(title=f"Datei nicht gefunden: {filepath.name}"))
+            self.toast_overlay.add_toast(
+                Adw.Toast(title=f"⚠️ Datei nicht gefunden: {filepath.name}")
+            )
             return
 
         missing_openers = True
@@ -414,6 +741,9 @@ class ClassShareWindow(Adw.ApplicationWindow):
             try:
                 command = [opener, "open", str(filepath)] if opener == "gio" else [opener, str(filepath)]
                 subprocess.Popen(command)
+                self.toast_overlay.add_toast(
+                    Adw.Toast(title=f"📄 {filepath.name} wird geöffnet")
+                )
                 return
             except FileNotFoundError:
                 continue
@@ -422,14 +752,15 @@ class ClassShareWindow(Adw.ApplicationWindow):
                 last_error = err
 
         if missing_openers:
-            message = "Weder gio noch xdg-open ist verfügbar"
+            message = "⚠️ Weder gio noch xdg-open ist verfügbar"
         elif last_error:
-            message = f"Konnte Datei nicht öffnen: {last_error.strerror or 'Unbekannter Fehler'}"
+            message = f"⚠️ Konnte Datei nicht öffnen: {last_error.strerror or 'Unbekannter Fehler'}"
         else:
-            message = "Konnte Datei nicht öffnen"
+            message = "⚠️ Konnte Datei nicht öffnen"
         self.toast_overlay.add_toast(Adw.Toast(title=message))
 
     def on_upload_received(self, name, timestamp):
+        self._submission_count += 1
         row = Adw.ActionRow(title=name, subtitle=f"Eingegangen um {timestamp}")
         filepath = self.state.upload_dir / name
         if filepath.exists():
@@ -441,7 +772,10 @@ class ClassShareWindow(Adw.ApplicationWindow):
             row.add_suffix(open_btn)
             row.set_activatable_widget(open_btn)
         self.listbox.append(row)
-        self.toast_overlay.add_toast(Adw.Toast(title=f"📥 {name} eingegangen"))
+        self.toast_overlay.add_toast(
+            Adw.Toast(title=f"📥 {name} eingegangen ({self._submission_count}. Abgabe)")
+        )
+        self._update_launcher_badge(self._submission_count)
         return False
 
 
@@ -453,7 +787,14 @@ class ClassShareApp(Adw.Application):
         self.server_thread = None
 
     def do_activate(self):
+        # Follow the system dark/light preference
+        try:
+            Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FOLLOW_SYSTEM)
+        except Exception:
+            pass
+
         self._start_server()
+        self._ensure_desktop_file()
         self.win = ClassShareWindow(self)
         self.win.present()
 
@@ -479,6 +820,29 @@ class ClassShareApp(Adw.Application):
         if hasattr(self, "win"):
             return self.win.on_upload_received(name, timestamp)
         return False
+
+    def _ensure_desktop_file(self):
+        """Create a .desktop file so the Unity launcher badge API can find the app."""
+        try:
+            desktop_dir = Path.home() / ".local" / "share" / "applications"
+            desktop_dir.mkdir(parents=True, exist_ok=True)
+            desktop_path = desktop_dir / APP_DESKTOP_ID
+            if not desktop_path.exists():
+                exec_path = Path(sys.argv[0]).resolve()
+                content = (
+                    "[Desktop Entry]\n"
+                    "Name=ClassShare\n"
+                    "Comment=Dateien teilen und einsammeln im Schulnetz\n"
+                    f"Exec={sys.executable} {exec_path}\n"
+                    "Icon=application-x-executable\n"
+                    "Terminal=false\n"
+                    "Type=Application\n"
+                    "Categories=Education;Network;\n"
+                    "StartupWMClass=ClassShare\n"
+                )
+                desktop_path.write_text(content)
+        except Exception:
+            pass
 
 
 def main():
