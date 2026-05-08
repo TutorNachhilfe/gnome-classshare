@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Hintergrund-Kreis (GNOME-typisch) -->
+  <circle cx="64" cy="64" r="60" fill="#3d3d3d"/>
+
+  <!-- Dokument -->
+  <rect x="34" y="28" width="48" height="60" rx="6" fill="#c8c8c8"/>
+  <!-- Eselsohr oben rechts -->
+  <polygon points="66,28 82,28 82,44" fill="#8a8a8a"/>
+  <!-- Linien auf Dokument -->
+  <line x1="44" y1="54" x2="68" y2="54" stroke="#8a8a8a" stroke-width="3" stroke-linecap="round"/>
+  <line x1="44" y1="64" x2="68" y2="64" stroke="#8a8a8a" stroke-width="3" stroke-linecap="round"/>
+  <line x1="44" y1="74" x2="58" y2="74" stroke="#8a8a8a" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Pfeil (teilen) -->
+  <circle cx="88" cy="88" r="20" fill="#1a1a1a"/>
+  <polyline points="82,88 88,82 94,88" fill="none" stroke="#e0e0e0" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="88" y1="82" x2="88" y2="96" stroke="#e0e0e0" stroke-width="3" stroke-linecap="round"/>
+</svg>
