@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
 
+import base64
+import hashlib
 import io
 import json
+import re
+import shutil
 import socket
 import subprocess
 import sys
 import threading
-from html import escape
 from datetime import datetime
 from email.message import Message
 from email.parser import BytesParser
 from email.policy import default as email_default_policy
+from html import escape
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import gi
 
@@ -30,10 +35,12 @@ except ImportError:  # pragma: no cover
 
 MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
 CONTENT_TOO_LARGE = getattr(HTTPStatus, "CONTENT_TOO_LARGE", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-
+COOKIE_NAME = "classshare_name"
+COOKIE_MAX_AGE = 30 * 24 * 60 * 60
 CONFIG_DIR = Path.home() / ".config" / "gnome-classshare"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 APP_DESKTOP_ID = "gnome-classshare.desktop"
+CLASSSHARE_ROOT = Path.home() / "ClassShare"
 
 
 def get_local_ip() -> str:
@@ -45,12 +52,41 @@ def get_local_ip() -> str:
         return "127.0.0.1"
 
 
+def format_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 * 1024:
+        return f"{round(size_bytes / 1024)} KB"
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+
+def sanitize_student_name(raw: str) -> str:
+    normalized = (raw or "").strip()
+    if not normalized:
+        return ""
+    normalized = normalized.replace(" ", "_")
+    normalized = re.sub(r"[^A-Za-z0-9_.-]", "_", normalized)
+    normalized = re.sub(r"_+", "_", normalized).strip("._-")
+    return normalized[:64]
+
+
+def sanitize_filename(raw: str) -> str:
+    filename = Path((raw or "").replace("\x00", "")).name
+    filename = re.sub(r"[\\/\r\n\t]", "_", filename)
+    filename = re.sub(r"[^A-Za-z0-9äöüÄÖÜß.,()\[\]{}+@=_ -]", "_", filename)
+    filename = re.sub(r"\s+", " ", filename).strip(" .")
+    return filename[:180] or "datei"
+
+
+def timestamp_prefix() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+
 def safe_unique_path(directory: Path, filename: str) -> Path:
     path_obj = Path(filename)
-    base = path_obj.name
     stem = path_obj.stem
     suffix = path_obj.suffix
-    target = directory / base
+    target = directory / path_obj.name
     counter = 2
     while target.exists():
         target = directory / f"{stem}_{counter}{suffix}"
@@ -58,371 +94,846 @@ def safe_unique_path(directory: Path, filename: str) -> Path:
     return target
 
 
+def cookie_header_for_name(name: str) -> str:
+    return f"{COOKIE_NAME}={quote(name)}; Max-Age={COOKIE_MAX_AGE}; Path=/; SameSite=Lax"
+
+
+def cookie_header_clear() -> str:
+    return f"{COOKIE_NAME}=; Max-Age=0; Path=/; SameSite=Lax"
+
+
+def parse_cookie_name(cookie_header: str | None) -> str | None:
+    if not cookie_header:
+        return None
+    cookie = SimpleCookie()
+    try:
+        cookie.load(cookie_header)
+    except Exception:
+        return None
+    morsel = cookie.get(COOKIE_NAME)
+    if not morsel:
+        return None
+    parsed = unquote(morsel.value)
+    return sanitize_student_name(parsed) or None
+
+
+def strip_timestamp_prefix(filename: str) -> str:
+    if "__" in filename:
+        return filename.split("__", 1)[1]
+    return filename
+
+
+def _ws_send_text(sock, text: str) -> bool:
+    payload = text.encode("utf-8")
+    frame = bytearray([0x81])
+    size = len(payload)
+    if size < 126:
+        frame.append(size)
+    elif size < 65536:
+        frame.append(126)
+        frame.extend(size.to_bytes(2, "big"))
+    else:
+        frame.append(127)
+        frame.extend(size.to_bytes(8, "big"))
+    frame.extend(payload)
+    try:
+        sock.sendall(frame)
+        return True
+    except OSError:
+        return False
+
+
+def _ws_send_json(sock, payload: dict) -> bool:
+    return _ws_send_text(sock, json.dumps(payload, ensure_ascii=False))
+
+
+def _ws_recv_frame(sock):
+    head = sock.recv(2)
+    if len(head) < 2:
+        return None, b""
+    first, second = head
+    opcode = first & 0x0F
+    masked = bool(second & 0x80)
+    length = second & 0x7F
+    if length == 126:
+        ext = sock.recv(2)
+        if len(ext) < 2:
+            return None, b""
+        length = int.from_bytes(ext, "big")
+    elif length == 127:
+        ext = sock.recv(8)
+        if len(ext) < 8:
+            return None, b""
+        length = int.from_bytes(ext, "big")
+
+    mask = b""
+    if masked:
+        mask = sock.recv(4)
+        if len(mask) < 4:
+            return None, b""
+
+    payload = b""
+    while len(payload) < length:
+        chunk = sock.recv(length - len(payload))
+        if not chunk:
+            return None, b""
+        payload += chunk
+
+    if masked:
+        payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+
+    return opcode, payload
+
+
 class ClassShareState:
     def __init__(self):
-        self.selected_files = []
-        self.selected_file = None
-        self.collecting_active = False
-        self.upload_dir = Path.home() / "Abgaben"
-        self.upload_dir.mkdir(parents=True, exist_ok=True)
-        self.received = []
         self.server_port = None
         self.server_ip = get_local_ip()
+        self.base_dir = CLASSSHARE_ROOT
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+
+        self.ip_to_name = {}
+        self.ws_connections = {}
+        self.last_active = {}
+        self.selected_files = []
+        self.lock = threading.RLock()
+
+    def student_names(self):
+        names = [p.name for p in self.base_dir.iterdir() if p.is_dir()]
+        names.sort(key=lambda name: name.casefold())
+        return names
+
+    def resolve_name(self, name: str) -> str | None:
+        lookup = {existing.casefold(): existing for existing in self.student_names()}
+        return lookup.get(name.casefold())
+
+    def ensure_student_dirs(self, name: str):
+        student_dir = self.base_dir / name
+        received_dir = student_dir / "empfangen"
+        sent_dir = student_dir / "gesendet"
+        received_dir.mkdir(parents=True, exist_ok=True)
+        sent_dir.mkdir(parents=True, exist_ok=True)
+        return student_dir, received_dir, sent_dir
+
+    def student_paths(self, name: str):
+        student_dir = self.base_dir / name
+        return student_dir, student_dir / "empfangen", student_dir / "gesendet"
+
+    def touch_active(self, name: str):
+        self.last_active[name] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def file_list_payload(self, student_name: str):
+        _, received_dir, sent_dir = self.student_paths(student_name)
+
+        def read_dir(path: Path, scope: str):
+            items = []
+            if not path.exists():
+                return items
+            files = [f for f in path.iterdir() if f.is_file()]
+            files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+            for file_path in files:
+                stat = file_path.stat()
+                items.append(
+                    {
+                        "filename": strip_timestamp_prefix(file_path.name),
+                        "stored_name": file_path.name,
+                        "size": stat.st_size,
+                        "size_human": format_size(stat.st_size),
+                        "timestamp": datetime.fromtimestamp(stat.st_mtime).strftime("%d.%m.%Y %H:%M"),
+                        "download": f"/download?scope={scope}&file={quote(file_path.name)}",
+                    }
+                )
+            return items
+
+        return {
+            "type": "file_list",
+            "received": read_dir(received_dir, "received"),
+            "sent": read_dir(sent_dir, "sent"),
+        }
+
+    def sockets_for_name(self, student_name: str):
+        sockets = self.ws_connections.get(student_name, set())
+        return list(sockets)
+
+    def add_socket(self, student_name: str, sock):
+        if student_name not in self.ws_connections:
+            self.ws_connections[student_name] = set()
+        self.ws_connections[student_name].add(sock)
+
+    def remove_socket(self, student_name: str, sock):
+        sockets = self.ws_connections.get(student_name)
+        if not sockets:
+            return
+        sockets.discard(sock)
+        if not sockets:
+            self.ws_connections.pop(student_name, None)
+
+    def push_file_list(self, student_name: str):
+        payload = self.file_list_payload(student_name)
+        for sock in self.sockets_for_name(student_name):
+            if not _ws_send_json(sock, payload):
+                self.remove_socket(student_name, sock)
+
+    def push_new_file(self, student_name: str, filename: str, size: int):
+        payload = {
+            "type": "new_file",
+            "filename": filename,
+            "size": size,
+        }
+        for sock in self.sockets_for_name(student_name):
+            if not _ws_send_json(sock, payload):
+                self.remove_socket(student_name, sock)
+        self.push_file_list(student_name)
+
+    def tutor_overview_rows(self):
+        rows = []
+        names = self.student_names()
+        for name in names:
+            _, received_dir, sent_dir = self.student_paths(name)
+            received_count = len([p for p in received_dir.glob("*") if p.is_file()]) if received_dir.exists() else 0
+            sent_count = len([p for p in sent_dir.glob("*") if p.is_file()]) if sent_dir.exists() else 0
+            is_online = bool(self.ws_connections.get(name))
+            rows.append(
+                {
+                    "name": name,
+                    "received": received_count,
+                    "sent": sent_count,
+                    "last_active": self.last_active.get(name, "-") ,
+                    "online": is_online,
+                }
+            )
+        return rows
 
 
 class ClassShareHandler(BaseHTTPRequestHandler):
     state = None
-    on_upload = None
+    on_state_change = None
+    on_student_upload = None
     max_upload_size = MAX_UPLOAD_SIZE_BYTES
 
     def log_message(self, fmt, *args):
         return
 
-    def _send_html(self, html: str, status=HTTPStatus.OK):
-        data = html.encode("utf-8")
+    def _send_bytes(self, content: bytes, content_type: str, status=HTTPStatus.OK, headers=None):
         self.send_response(status)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Type", content_type)
+        if headers:
+            for key, value in headers.items():
+                self.send_header(key, value)
+        self.send_header("Content-Length", str(len(content)))
         self.end_headers()
-        self.wfile.write(data)
+        self.wfile.write(content)
+
+    def _send_html(self, html: str, status=HTTPStatus.OK, headers=None):
+        self._send_bytes(html.encode("utf-8"), "text/html; charset=utf-8", status=status, headers=headers)
+
+    def _send_json(self, payload: dict, status=HTTPStatus.OK, headers=None):
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self._send_bytes(data, "application/json; charset=utf-8", status=status, headers=headers)
+
+    def _redirect(self, location: str, headers=None):
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", location)
+        if headers:
+            for key, value in headers.items():
+                self.send_header(key, value)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _client_ip(self):
+        return self.client_address[0]
+
+    def _notify_state_change(self):
+        if self.on_state_change:
+            GLib.idle_add(self.on_state_change)
+
+    def _ensure_auth(self):
+        ip = self._client_ip()
+        cookie_name = parse_cookie_name(self.headers.get("Cookie"))
+
+        with self.state.lock:
+            if cookie_name:
+                canonical = self.state.resolve_name(cookie_name)
+                if canonical:
+                    self.state.ensure_student_dirs(canonical)
+                    self.state.ip_to_name[ip] = canonical
+                    self.state.touch_active(canonical)
+                    return canonical, False
+
+            mapped = self.state.ip_to_name.get(ip)
+            if mapped:
+                canonical = self.state.resolve_name(mapped)
+                if canonical:
+                    self.state.ensure_student_dirs(canonical)
+                    self.state.touch_active(canonical)
+                    return canonical, True
+
+        return None, False
 
     def do_GET(self):
-        parsed_url = urlparse(self.path)
-        path = parsed_url.path
-        if path == "/download":
-            requested_name = parse_qs(parsed_url.query).get("file", [None])[0]
-            if requested_name is None:
-                self._redirect("/files")
-                return
-            self._handle_download(requested_name)
+        parsed = urlparse(self.path)
+        if parsed.path == "/":
+            self._handle_root()
             return
-        if path == "/files":
-            self._handle_files_page()
+        if parsed.path == "/api/files":
+            self._handle_file_list_api()
             return
-        if path == "/":
-            self._handle_upload_page()
+        if parsed.path == "/download":
+            self._handle_download(parsed)
+            return
+        if parsed.path == "/ws":
+            self._handle_websocket()
             return
         self._send_html("<h1>Nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/login":
+            self._handle_login()
+            return
+        if path == "/logout":
+            self._handle_logout()
+            return
         if path == "/upload":
             self._handle_upload()
             return
         self._send_html("<h1>Nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
 
-    def _redirect(self, location: str):
-        self.send_response(HTTPStatus.FOUND)
-        self.send_header("Location", location)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
-
-    def _selected_paths(self):
-        selected_files = list(self.state.selected_files)
-        if not selected_files and self.state.selected_file:
-            selected_files = [self.state.selected_file]
-        return selected_files
-
-    def _format_size(self, size_bytes: int) -> str:
-        if size_bytes < 1024:
-            return f"{size_bytes} B"
-        if size_bytes < 1024 * 1024:
-            return f"{round(size_bytes / 1024)} KB"
-        return f"{size_bytes / (1024 * 1024):.1f} MB"
-
-    def _handle_files_page(self):
-        files = []
-        for selected in self._selected_paths():
-            try:
-                file_path = Path(selected)
-                if file_path.exists() and file_path.is_file():
-                    files.append(file_path)
-            except (TypeError, ValueError):
-                continue
-
-        if not files:
-            self._send_html("<h1>Keine Datei verfügbar</h1>", status=HTTPStatus.NOT_FOUND)
+    def _handle_root(self):
+        student_name, needs_cookie = self._ensure_auth()
+        if not student_name:
+            self._send_html(self._render_name_page())
             return
 
-        rows = []
-        for file_path in files:
-            filename = file_path.name
-            file_size = self._format_size(file_path.stat().st_size)
-            download_link = f"/download?file={quote(filename)}"
-            rows.append(
-                f"""
-                <li class="file-row">
-                  <span class="file-name">📄 {escape(filename)}</span>
-                  <span class="file-meta">({file_size})</span>
-                  <a class="download-btn" href="{download_link}">Herunterladen</a>
-                </li>
-                """
-            )
+        headers = {}
+        if needs_cookie:
+            headers["Set-Cookie"] = cookie_header_for_name(student_name)
+        self._send_html(self._render_student_page(student_name), headers=headers)
 
-        self._send_html(
-            f"""
-            <!doctype html>
-            <html lang="de">
-            <head>
-              <meta charset="utf-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1">
-              <title>Verfügbare Dateien</title>
-              <style>
-                body {{
-                  margin: 0;
-                  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-                  background: #f5f6f8;
-                  color: #1f2937;
-                  min-height: 100vh;
-                  display: grid;
-                  place-items: center;
-                  padding: 1rem;
-                }}
-                .card {{
-                  width: min(720px, calc(100vw - 2rem));
-                  background: #fff;
-                  border-radius: 20px;
-                  padding: 1.5rem;
-                  box-shadow: 0 10px 24px rgba(0,0,0,.08);
-                }}
-                h1 {{
-                  margin: 0 0 .5rem 0;
-                  font-size: clamp(1.4rem, 3vw, 2rem);
-                }}
-                .subtitle {{
-                  margin: 0 0 1rem 0;
-                  color: #6b7280;
-                }}
-                .file-list {{
-                  list-style: none;
-                  padding: 0;
-                  margin: 0;
-                  display: grid;
-                  gap: .75rem;
-                }}
-                .file-row {{
-                  display: grid;
-                  grid-template-columns: 1fr auto auto;
-                  gap: .75rem;
-                  align-items: center;
-                  border: 1px solid #e5e7eb;
-                  border-radius: 14px;
-                  padding: .9rem;
-                  background: #fff;
-                }}
-                .file-name {{
-                  overflow: hidden;
-                  text-overflow: ellipsis;
-                  white-space: nowrap;
-                }}
-                .file-meta {{
-                  color: #6b7280;
-                  font-size: .95rem;
-                }}
-                .download-btn {{
-                  text-decoration: none;
-                  background: #2563eb;
-                  color: white;
-                  border-radius: 10px;
-                  padding: .5rem .85rem;
-                  font-weight: 600;
-                }}
-              </style>
-            </head>
-            <body>
-              <main class="card">
-                <h1>📁 Verfügbare Dateien</h1>
-                <p class="subtitle">Bitte Datei auswählen und herunterladen.</p>
-                <ul class="file-list">
-                  {''.join(rows)}
-                </ul>
-              </main>
-            </body>
-            </html>
-            """
-        )
+    def _render_name_page(self, error: str = ""):
+        error_html = f'<p class="error">{escape(error)}</p>' if error else ""
+        return f"""
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClassShare</title>
+  <style>
+    :root {{
+      --bg: #ffffff;
+      --card: #f5f5f5;
+      --text: #1a1a1a;
+      --accent: #0066cc;
+      --border: #e0e0e0;
+    }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{
+        --bg: #1a1a1a;
+        --card: #2d2d2d;
+        --text: #f0f0f0;
+        --accent: #4da6ff;
+        --border: #444444;
+      }}
+    }}
+    body {{
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 1rem;
+    }}
+    .card {{
+      width: min(820px, 100%);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 2rem;
+      box-sizing: border-box;
+    }}
+    h1 {{ margin: 0 0 1rem 0; font-size: clamp(2rem, 6vw, 3rem); }}
+    input {{
+      width: 100%;
+      box-sizing: border-box;
+      padding: 1rem;
+      font-size: clamp(1.1rem, 4vw, 1.6rem);
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      margin-bottom: 1rem;
+    }}
+    button {{
+      width: 100%;
+      padding: 1rem;
+      border: 0;
+      border-radius: 14px;
+      font-size: clamp(1.1rem, 4vw, 1.5rem);
+      font-weight: 700;
+      background: var(--accent);
+      color: #fff;
+    }}
+    .error {{ color: #e11d48; font-weight: 700; margin: .25rem 0 1rem 0; }}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>👤 Dein Name</h1>
+    {error_html}
+    <form action="/login" method="post">
+      <input name="name" autocomplete="name" placeholder="Vorname_Nachname" required autofocus>
+      <button type="submit">Weiter</button>
+    </form>
+  </main>
+</body>
+</html>
+"""
 
-    def _handle_download(self, requested_name: str):
-        if not requested_name or "\x00" in requested_name:
+    def _render_student_page(self, student_name: str):
+        escaped_name = escape(student_name)
+        return f"""
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClassShare</title>
+  <style>
+    :root {{
+      --bg: #ffffff;
+      --card: #f5f5f5;
+      --text: #1a1a1a;
+      --accent: #0066cc;
+      --border: #e0e0e0;
+    }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{
+        --bg: #1a1a1a;
+        --card: #2d2d2d;
+        --text: #f0f0f0;
+        --accent: #4da6ff;
+        --border: #444444;
+      }}
+    }}
+    body {{
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      padding: 1rem;
+      box-sizing: border-box;
+    }}
+    .wrap {{ width: min(900px, 100%); }}
+    .header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: .75rem 1rem;
+      margin-bottom: .75rem;
+      gap: .75rem;
+    }}
+    .brand {{ font-weight: 700; font-size: 1.05rem; }}
+    .who {{ display: flex; align-items: center; gap: .5rem; }}
+    .logout {{
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      border-radius: 10px;
+      padding: .35rem .55rem;
+      cursor: pointer;
+      font-size: .95rem;
+    }}
+    .card {{
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: .8rem;
+    }}
+    .list {{ display: grid; gap: .5rem; }}
+    .row {{
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: .5rem;
+      align-items: center;
+      padding: .65rem;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--bg);
+    }}
+    .name {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    .meta {{ font-size: .86rem; opacity: .8; }}
+    .btn {{
+      border: 0;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 8px;
+      padding: .35rem .65rem;
+      text-decoration: none;
+      font-size: .92rem;
+    }}
+    .sep {{ border: 0; border-top: 1px solid var(--border); margin: .8rem 0; }}
+    .drop {{
+      border: 2px dashed var(--border);
+      border-radius: 12px;
+      text-align: center;
+      padding: 1.4rem .8rem;
+      background: var(--bg);
+      cursor: pointer;
+    }}
+    .choose {{
+      margin-top: .7rem;
+      border: 0;
+      border-radius: 10px;
+      padding: .55rem .8rem;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+    }}
+    #toast {{
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      top: 1rem;
+      background: var(--text);
+      color: var(--bg);
+      border-radius: 10px;
+      padding: .65rem .9rem;
+      display: none;
+      z-index: 20;
+      max-width: min(92vw, 560px);
+    }}
+  </style>
+</head>
+<body>
+  <div id="toast"></div>
+  <main class="wrap">
+    <div class="header">
+      <div class="brand">📚 ClassShare</div>
+      <div class="who">👤 {escaped_name} <button id="logout" class="logout">↩️</button></div>
+    </div>
+
+    <section class="card">
+      <div id="received" class="list"></div>
+      <hr class="sep">
+      <div id="dropzone" class="drop">
+        <div>📤 Datei hierher ziehen</div>
+        <button id="choose" class="choose" type="button">oder Datei wählen</button>
+        <input id="file-input" type="file" name="files" multiple hidden>
+      </div>
+      <hr class="sep">
+      <div id="sent" class="list"></div>
+    </section>
+  </main>
+
+  <script>
+    const toast = document.getElementById('toast');
+    const received = document.getElementById('received');
+    const sent = document.getElementById('sent');
+    const fileInput = document.getElementById('file-input');
+    const dropzone = document.getElementById('dropzone');
+
+    function showToast(text) {{
+      toast.textContent = text;
+      toast.style.display = 'block';
+      clearTimeout(showToast._timer);
+      showToast._timer = setTimeout(() => toast.style.display = 'none', 3200);
+    }}
+
+    function renderRow(file, isSent) {{
+      const row = document.createElement('div');
+      row.className = 'row';
+      const ack = isSent ? '✅ ' : '';
+      row.innerHTML = `
+        <div class="name">📄 ${{file.filename}}</div>
+        <div class="meta">${{ack}}${{file.size_human}} · ${{file.timestamp}}</div>
+        <a class="btn" href="${{file.download}}">↓</a>
+      `;
+      return row;
+    }}
+
+    function renderList(target, files, isSent) {{
+      target.replaceChildren();
+      files.forEach(file => target.appendChild(renderRow(file, isSent)));
+    }}
+
+    async function loadFiles() {{
+      const response = await fetch('/api/files', {{ cache: 'no-store' }});
+      if (!response.ok) return;
+      const data = await response.json();
+      renderList(received, data.received || [], false);
+      renderList(sent, data.sent || [], true);
+    }}
+
+    async function uploadFiles(files) {{
+      if (!files || files.length === 0) return;
+      const body = new FormData();
+      for (const file of files) body.append('files', file);
+      const response = await fetch('/upload', {{ method: 'POST', body }});
+      if (!response.ok) {{
+        showToast('Upload fehlgeschlagen');
+        return;
+      }}
+      await loadFiles();
+      showToast('✅ Datei hochgeladen');
+    }}
+
+    document.getElementById('choose').addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => uploadFiles(fileInput.files));
+
+    dropzone.addEventListener('dragover', (event) => {{
+      event.preventDefault();
+      dropzone.style.borderColor = 'var(--accent)';
+    }});
+    dropzone.addEventListener('dragleave', () => {{
+      dropzone.style.borderColor = 'var(--border)';
+    }});
+    dropzone.addEventListener('drop', (event) => {{
+      event.preventDefault();
+      dropzone.style.borderColor = 'var(--border)';
+      uploadFiles(event.dataTransfer.files);
+    }});
+
+    document.getElementById('logout').addEventListener('click', async () => {{
+      await fetch('/logout', {{ method: 'POST' }});
+      location.href = '/';
+    }});
+
+    function connectWebSocket() {{
+      const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${{scheme}}://${{location.host}}/ws`);
+      ws.onmessage = (event) => {{
+        try {{
+          const payload = JSON.parse(event.data);
+          if (payload.type === 'new_file') {{
+            showToast(`📄 Neue Datei von Tutor: ${{payload.filename}}`);
+          }}
+          if (payload.type === 'file_list') {{
+            renderList(received, payload.received || [], false);
+            renderList(sent, payload.sent || [], true);
+          }}
+        }} catch (_) {{}}
+      }};
+      ws.onclose = () => setTimeout(connectWebSocket, 1500);
+    }}
+
+    loadFiles();
+    connectWebSocket();
+  </script>
+</body>
+</html>
+"""
+
+    def _handle_login(self):
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        if content_length <= 0 or content_length > 16 * 1024:
+            self._send_html(self._render_name_page("Ungültige Eingabe"), status=HTTPStatus.BAD_REQUEST)
+            return
+
+        payload = self.rfile.read(content_length).decode("utf-8", errors="replace")
+        submitted = parse_qs(payload).get("name", [""])[0]
+        normalized = sanitize_student_name(submitted)
+        if not normalized:
+            self._send_html(self._render_name_page("Bitte einen gültigen Namen eingeben"), status=HTTPStatus.BAD_REQUEST)
+            return
+
+        with self.state.lock:
+            if self.state.resolve_name(normalized):
+                self._send_html(self._render_name_page("Dieser Name ist bereits vergeben"), status=HTTPStatus.CONFLICT)
+                return
+            self.state.ensure_student_dirs(normalized)
+            self.state.ip_to_name[self._client_ip()] = normalized
+            self.state.touch_active(normalized)
+
+        self._notify_state_change()
+        self._redirect("/", headers={"Set-Cookie": cookie_header_for_name(normalized)})
+
+    def _handle_logout(self):
+        with self.state.lock:
+            self.state.ip_to_name.pop(self._client_ip(), None)
+        self._notify_state_change()
+        self._redirect("/", headers={"Set-Cookie": cookie_header_clear()})
+
+    def _handle_file_list_api(self):
+        student_name, needs_cookie = self._ensure_auth()
+        if not student_name:
+            self._send_json({"error": "nicht angemeldet"}, status=HTTPStatus.UNAUTHORIZED)
+            return
+
+        headers = {}
+        if needs_cookie:
+            headers["Set-Cookie"] = cookie_header_for_name(student_name)
+
+        with self.state.lock:
+            payload = self.state.file_list_payload(student_name)
+        self._send_json(payload, headers=headers)
+
+    def _handle_download(self, parsed_url):
+        student_name, needs_cookie = self._ensure_auth()
+        if not student_name:
+            self._send_html("<h1>Nicht erlaubt</h1>", status=HTTPStatus.FORBIDDEN)
+            return
+
+        params = parse_qs(parsed_url.query)
+        scope = params.get("scope", [""])[0]
+        requested = params.get("file", [""])[0]
+
+        if requested != Path(requested).name or any(part in requested for part in ("/", "\\", "\x00")):
             self._send_html("<h1>Ungültiger Dateiname</h1>", status=HTTPStatus.BAD_REQUEST)
             return
 
-        if "/" in requested_name or "\\" in requested_name:
-            self._send_html("<h1>Ungültiger Dateiname</h1>", status=HTTPStatus.BAD_REQUEST)
+        _, received_dir, sent_dir = self.state.student_paths(student_name)
+        if scope == "received":
+            directory = received_dir
+        elif scope == "sent":
+            directory = sent_dir
+        else:
+            self._send_html("<h1>Ungültige Anfrage</h1>", status=HTTPStatus.BAD_REQUEST)
             return
 
-        safe_name = Path(requested_name).name
-        if safe_name != requested_name:
-            self._send_html("<h1>Ungültiger Dateiname</h1>", status=HTTPStatus.BAD_REQUEST)
-            return
-
-        file_path = None
-        for selected in self._selected_paths():
-            candidate = Path(selected)
-            if candidate.name == safe_name and candidate.exists() and candidate.is_file():
-                file_path = candidate
-                break
-
-        if file_path is None:
+        file_path = directory / requested
+        if not file_path.exists() or not file_path.is_file():
             self._send_html("<h1>Datei nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
             return
 
         data = file_path.read_bytes()
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Disposition", f'attachment; filename="{file_path.name}"')
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _handle_upload_page(self):
-        if not self.state.collecting_active:
-            self._send_html(
-                """
-                <!doctype html>
-                <html lang="de"><meta charset="utf-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1">
-                <title>Abgabe pausiert</title>
-                <body style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 2rem;">
-                <h1>Abgabe ist aktuell nicht aktiv.</h1>
-                </body></html>
-                """,
-                status=HTTPStatus.SERVICE_UNAVAILABLE,
-            )
-            return
-
-        self._send_html(
-            """
-            <!doctype html>
-            <html lang="de">
-            <head>
-              <meta charset="utf-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1">
-              <title>Aufgabe abgeben</title>
-              <style>
-                body {
-                  margin: 0;
-                  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-                  background: #f5f6f8;
-                  color: #1f2937;
-                  min-height: 100vh;
-                  display: grid;
-                  place-items: center;
-                }
-                .card {
-                  width: min(720px, calc(100vw - 2rem));
-                  background: #fff;
-                  border-radius: 20px;
-                  padding: 1.5rem;
-                  box-shadow: 0 10px 24px rgba(0,0,0,.08);
-                }
-                h1 { margin-top: 0; font-size: clamp(1.7rem, 3vw, 2.2rem); }
-                p { font-size: 1.05rem; }
-                input[type=file] {
-                  width: 100%;
-                  padding: 1rem;
-                  border: 2px dashed #93a3b8;
-                  border-radius: 14px;
-                  font-size: 1rem;
-                  background: #f9fafb;
-                  margin-bottom: 1rem;
-                }
-                button {
-                  width: 100%;
-                  border: 0;
-                  border-radius: 14px;
-                  padding: 1rem;
-                  font-size: 1.25rem;
-                  font-weight: 700;
-                  background: #2563eb;
-                  color: white;
-                }
-              </style>
-            </head>
-            <body>
-              <main class="card">
-                <h1>Aufgabe abgeben</h1>
-                <p>Datei auswählen und auf <strong>Abgeben</strong> tippen.</p>
-                <form action="/upload" method="post" enctype="multipart/form-data">
-                  <input type="file" name="file" required>
-                  <button type="submit">Abgeben</button>
-                </form>
-              </main>
-            </body>
-            </html>
-            """
-        )
+        headers = {
+            "Content-Disposition": f'attachment; filename="{strip_timestamp_prefix(file_path.name)}"',
+        }
+        if needs_cookie:
+            headers["Set-Cookie"] = cookie_header_for_name(student_name)
+        self._send_bytes(data, "application/octet-stream", headers=headers)
 
     def _handle_upload(self):
-        if not self.state.collecting_active:
-            self._send_html("<h1>Abgabe ist nicht aktiv</h1>", status=HTTPStatus.SERVICE_UNAVAILABLE)
+        student_name, needs_cookie = self._ensure_auth()
+        if not student_name:
+            self._send_json({"error": "nicht angemeldet"}, status=HTTPStatus.FORBIDDEN)
             return
 
         content_type = self.headers.get("Content-Type", "")
         header = Message()
         header["content-type"] = content_type
         if header.get_content_type() != "multipart/form-data":
-            self._send_html("<h1>Ungültige Anfrage</h1>", status=HTTPStatus.BAD_REQUEST)
+            self._send_json({"error": "Ungültige Anfrage"}, status=HTTPStatus.BAD_REQUEST)
             return
 
         boundary = header.get_param("boundary")
         try:
-            content_length = int(self.headers.get("Content-Length", "0"))
+            content_length = int(self.headers.get("Content-Length", "0") or "0")
         except ValueError:
-            self._send_html("<h1>Ungültige Anfrage</h1>", status=HTTPStatus.BAD_REQUEST)
-            return
+            content_length = 0
+
         if not boundary or content_length <= 0:
-            self._send_html("<h1>Ungültige Anfrage</h1>", status=HTTPStatus.BAD_REQUEST)
+            self._send_json({"error": "Ungültige Anfrage"}, status=HTTPStatus.BAD_REQUEST)
             return
+
         if content_length > self.max_upload_size:
-            self._send_html("<h1>Datei ist zu groß (max. 100 MB)</h1>", status=CONTENT_TOO_LARGE)
+            self._send_json({"error": "Datei ist zu groß (max. 100 MB)"}, status=CONTENT_TOO_LARGE)
             return
 
         body = self.rfile.read(content_length)
-        mime_blob = (
-            f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8")
-            + body
-        )
+        mime_blob = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8") + body
         message = BytesParser(policy=email_default_policy).parsebytes(mime_blob)
 
-        uploaded_name = None
-        uploaded_data = None
+        uploaded_parts = []
         for part in message.iter_parts():
-            if part.get_param("name", header="content-disposition") != "file":
+            field_name = part.get_param("name", header="content-disposition")
+            if field_name not in {"file", "files"}:
                 continue
             uploaded_name = part.get_filename()
             uploaded_data = part.get_payload(decode=True) or b""
-            break
+            if not uploaded_name:
+                continue
+            uploaded_parts.append((uploaded_name, uploaded_data))
 
-        if not uploaded_name:
-            self._send_html("<h1>Keine Datei ausgewählt</h1>", status=HTTPStatus.BAD_REQUEST)
+        if not uploaded_parts:
+            self._send_json({"error": "Keine Datei ausgewählt"}, status=HTTPStatus.BAD_REQUEST)
             return
 
-        target = safe_unique_path(self.state.upload_dir, uploaded_name)
+        saved = []
+        with self.state.lock:
+            self.state.ensure_student_dirs(student_name)
+            _, _, sent_dir = self.state.student_paths(student_name)
+            for original_name, data in uploaded_parts:
+                safe_original = sanitize_filename(original_name)
+                prefixed = f"{timestamp_prefix()}__{safe_original}"
+                target = safe_unique_path(sent_dir, prefixed)
+                with open(target, "wb") as out:
+                    out.write(data)
+                saved.append({"filename": strip_timestamp_prefix(target.name), "size": len(data)})
+            self.state.touch_active(student_name)
+            self.state.push_file_list(student_name)
+
+        if self.on_student_upload:
+            for entry in saved:
+                GLib.idle_add(self.on_student_upload, student_name, entry["filename"], entry["size"])
+        self._notify_state_change()
+
+        headers = {}
+        if needs_cookie:
+            headers["Set-Cookie"] = cookie_header_for_name(student_name)
+        self._send_json({"ok": True, "saved": saved}, headers=headers)
+
+    def _handle_websocket(self):
+        student_name, needs_cookie = self._ensure_auth()
+        if not student_name:
+            self.send_error(HTTPStatus.FORBIDDEN, "Nicht erlaubt")
+            return
+
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        if "websocket" not in self.headers.get("Upgrade", "").lower() or not key:
+            self.send_error(HTTPStatus.BAD_REQUEST, "Ungültiger WebSocket-Handshake")
+            return
+
+        accept = base64.b64encode(
+            hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("utf-8")).digest()
+        ).decode("ascii")
+
+        self.send_response(HTTPStatus.SWITCHING_PROTOCOLS)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        if needs_cookie:
+            self.send_header("Set-Cookie", cookie_header_for_name(student_name))
+        self.end_headers()
+
+        self.connection.settimeout(30)
+        with self.state.lock:
+            self.state.add_socket(student_name, self.connection)
+            _ws_send_json(self.connection, self.state.file_list_payload(student_name))
+            self.state.touch_active(student_name)
+        self._notify_state_change()
+
         try:
-            with open(target, "wb") as out:
-                out.write(uploaded_data)
+            while True:
+                opcode, payload = _ws_recv_frame(self.connection)
+                if opcode is None:
+                    break
+                if opcode == 0x8:
+                    break
+                if opcode == 0x9:
+                    pong = bytes([0x8A, len(payload)]) + payload
+                    self.connection.sendall(pong)
+                if opcode == 0x1:
+                    try:
+                        data = json.loads(payload.decode("utf-8"))
+                        if data.get("type") == "ping":
+                            _ws_send_json(self.connection, {"type": "pong"})
+                    except Exception:
+                        pass
         except OSError:
-            self._send_html("<h1>Datei konnte nicht gespeichert werden</h1>", status=HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
-
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.state.received.append((target.name, timestamp))
-
-        if self.on_upload:
-            GLib.idle_add(self.on_upload, target.name, timestamp)
-
-        self._send_html(
-            """
-            <!doctype html>
-            <html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-            <title>Erfolgreich abgegeben</title>
-            <body style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 2rem; text-align:center;">
-              <h1>✅ Erfolgreich abgegeben!</h1>
-              <p>Die Datei wurde an die Lehrkraft übertragen.</p>
-            </body></html>
-            """
-        )
+            pass
+        finally:
+            with self.state.lock:
+                self.state.remove_socket(student_name, self.connection)
+            self._notify_state_change()
 
 
 class ClassShareWindow(Adw.ApplicationWindow):
@@ -430,95 +941,58 @@ class ClassShareWindow(Adw.ApplicationWindow):
         super().__init__(application=app)
         self.app = app
         self.state = app.state
-        self._submission_count = 0
         self._is_fullscreen = False
 
         self.set_title("ClassShare")
-        self.set_size_request(600, 400)
-        self.set_deletable(True)
+        self.set_size_request(700, 520)
 
-        # App-Icon für den Fenstermanager setzen
-        try:
-            icon_path = Path(__file__).parent / "icons" / "classshare.svg"
-            if icon_path.exists():
-                self.get_application().set_default_icon_name("gnome-classshare")
-        except Exception:
-            pass
-
-        # Toast overlay wraps everything
         self.toast_overlay = Adw.ToastOverlay()
         self.set_content(self.toast_overlay)
 
-        # ToolbarView integrates the HeaderBar properly
-        toolbar_view = Adw.ToolbarView()
-        self.toast_overlay.set_child(toolbar_view)
-
-        header = self._build_header()
-        toolbar_view.add_top_bar(header)
+        toolbar = Adw.ToolbarView()
+        self.toast_overlay.set_child(toolbar)
+        toolbar.add_top_bar(self._build_header())
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         root.set_margin_top(12)
         root.set_margin_bottom(12)
         root.set_margin_start(12)
         root.set_margin_end(12)
-        toolbar_view.set_content(root)
+        toolbar.set_content(root)
 
-        top = Gtk.Box(spacing=6)
-        self.send_btn = Gtk.ToggleButton(label="Senden")
-        self.collect_btn = Gtk.ToggleButton(label="Einsammeln")
-        self.send_btn.set_active(True)
-        self.send_btn.connect("toggled", self._on_mode_toggled, "send")
-        self.collect_btn.connect("toggled", self._on_mode_toggled, "collect")
-        top.append(self.send_btn)
-        top.append(self.collect_btn)
-        root.append(top)
+        qr_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        qr_label = Gtk.Label(label="Schüler-Seite")
+        qr_label.set_xalign(0)
+        qr_box.append(qr_label)
+        self.qr_picture = Gtk.Picture()
+        qr_box.append(self.qr_picture)
+        root.append(qr_box)
 
-        self.stack = Gtk.Stack()
-        self.stack.set_vexpand(True)
-        root.append(self.stack)
+        root.append(self._build_send_controls())
+        root.append(self._build_tutor_overview())
 
-        self.stack.add_titled(self._build_send_page(), "send", "Senden")
-        self.stack.add_titled(self._build_collect_page(), "collect", "Einsammeln")
-
-        # Load saved window size
-        self._load_settings()
-
-        # Save size on close
-        self.connect("close-request", self._on_close_request)
-
-        # Register window actions + keyboard shortcuts
         self._setup_actions()
-
-        # Drag & Drop support
-        self._setup_drag_drop()
-
-        self._update_qr_images()
-
-    # ------------------------------------------------------------------ header
+        self._load_settings()
+        self.connect("close-request", self._on_close_request)
+        self._update_qr()
+        self._refresh_selected_files_ui()
+        self.refresh_from_state()
 
     def _build_header(self):
         header = Adw.HeaderBar()
-
-        # Hamburger menu (start side)
         menu = Gio.Menu()
         menu.append("Über ClassShare", "win.show-about")
         menu.append("Tastenkürzel", "win.show-shortcuts")
+
         menu_btn = Gtk.MenuButton()
         menu_btn.set_icon_name("open-menu-symbolic")
         menu_btn.set_menu_model(menu)
-        menu_btn.set_tooltip_text("Menü")
         header.pack_start(menu_btn)
 
-        # Fullscreen toggle button (end side)
-        self._fullscreen_btn = Gtk.Button()
-        self._fullscreen_btn.set_icon_name("view-fullscreen-symbolic")
-        self._fullscreen_btn.set_tooltip_text("Vollbild (F11)")
+        self._fullscreen_btn = Gtk.Button(icon_name="view-fullscreen-symbolic")
         self._fullscreen_btn.connect("clicked", self._toggle_fullscreen)
         header.pack_end(self._fullscreen_btn)
-
         return header
-
-    # ---------------------------------------------------- actions + shortcuts
 
     def _setup_actions(self):
         actions = [
@@ -541,7 +1015,68 @@ class ClassShareWindow(Adw.ApplicationWindow):
             app.set_accels_for_action("win.close", ["<Primary>w"])
             app.set_accels_for_action("win.show-about", ["<Primary>F1"])
 
-    # ---------------------------------------------------- fullscreen
+    def _build_send_controls(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+
+        target_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        target_label = Gtk.Label(label="Empfänger")
+        target_label.set_xalign(0)
+        target_row.append(target_label)
+
+        self.target_combo = Gtk.ComboBoxText()
+        self.target_combo.append_text("Alle Schüler")
+        self.target_combo.set_active(0)
+        target_row.append(self.target_combo)
+        box.append(target_row)
+
+        self.selected_count_label = Gtk.Label(label="0 Datei(en) ausgewählt")
+        self.selected_count_label.set_xalign(0)
+        box.append(self.selected_count_label)
+
+        file_btn = Gtk.Button(label="Datei wählen")
+        file_btn.connect("clicked", self._choose_file)
+        box.append(file_btn)
+
+        self.selected_files_listbox = Gtk.ListBox()
+        self.selected_files_listbox.add_css_class("boxed-list")
+        self.selected_files_listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+        files_scrolled = Gtk.ScrolledWindow()
+        files_scrolled.set_min_content_height(120)
+        files_scrolled.set_child(self.selected_files_listbox)
+        box.append(files_scrolled)
+
+        send_btn = Gtk.Button(label="An Schüler senden")
+        send_btn.add_css_class("suggested-action")
+        send_btn.connect("clicked", self._send_files_to_students)
+        box.append(send_btn)
+
+        return box
+
+    def _build_tutor_overview(self):
+        frame = Gtk.Frame(label="Schüler-Übersicht")
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        content.set_margin_top(8)
+        content.set_margin_bottom(8)
+        content.set_margin_start(8)
+        content.set_margin_end(8)
+        frame.set_child(content)
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        for title, width in (("●", 30), ("Name", 190), ("Dateien erhalten", 140), ("Dateien gesendet", 140), ("Zuletzt aktiv", 180)):
+            label = Gtk.Label(label=title)
+            label.set_xalign(0)
+            label.set_width_chars(max(4, width // 10))
+            header.append(label)
+        content.append(header)
+
+        self.overview_list = Gtk.ListBox()
+        self.overview_list.add_css_class("boxed-list")
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_vexpand(True)
+        scrolled.set_child(self.overview_list)
+        content.append(scrolled)
+
+        return frame
 
     def _toggle_fullscreen(self, *_):
         self._is_fullscreen = not self._is_fullscreen
@@ -554,8 +1089,6 @@ class ClassShareWindow(Adw.ApplicationWindow):
 
     def _close_window(self, *_):
         self.close()
-
-    # ---------------------------------------------------- about dialog
 
     def _show_about(self, *_):
         try:
@@ -572,21 +1105,6 @@ class ClassShareWindow(Adw.ApplicationWindow):
             return
         except AttributeError:
             pass
-        try:
-            win = Adw.AboutWindow(
-                transient_for=self,
-                application_name="ClassShare",
-                version="1.0",
-                comments="Dateien teilen und einsammeln im Schulnetz",
-                license_type=Gtk.License.GPL_3_0,
-                developers=["GitHub Copilot (KI)"],
-                website="https://github.com/TutorNachhilfe/gnome-classshare",
-            )
-            win.present()
-        except Exception:
-            pass
-
-    # ---------------------------------------------------- shortcuts window
 
     def _show_shortcuts(self, *_):
         try:
@@ -607,64 +1125,14 @@ class ClassShareWindow(Adw.ApplicationWindow):
             </child>
           </object>
         </child>
-        <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">Fenster</property>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Vollbild</property>
-                <property name="accelerator">F11</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Fenster schließen</property>
-                <property name="accelerator">&lt;Primary&gt;w</property>
-              </object>
-            </child>
-          </object>
-        </child>
-        <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">Hilfe</property>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Tastenkürzel anzeigen</property>
-                <property name="accelerator">&lt;Primary&gt;question</property>
-              </object>
-            </child>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Über ClassShare</property>
-                <property name="accelerator">&lt;Primary&gt;F1</property>
-              </object>
-            </child>
-          </object>
-        </child>
       </object>
     </child>
   </object>
 </interface>"""
             builder = Gtk.Builder.new_from_string(xml, -1)
-            shortcuts_win = builder.get_object("win")
-            shortcuts_win.set_transient_for(self)
-            shortcuts_win.present()
-        except Exception:
-            pass
-
-    # ---------------------------------------------------- drag & drop
-
-    def _setup_drag_drop(self):
-        try:
-            drop_types = [Gio.File.__gtype__]
-            if hasattr(Gdk, "FileList"):
-                drop_types.append(Gdk.FileList.__gtype__)
-            for drop_type in drop_types:
-                drop_target = Gtk.DropTarget.new(drop_type, Gdk.DragAction.COPY)
-                drop_target.connect("drop", self._on_drop)
-                drop_target.connect("enter", self._on_drag_enter)
-                drop_target.connect("leave", self._on_drag_leave)
-                self.add_controller(drop_target)
+            win = builder.get_object("win")
+            win.set_transient_for(self)
+            win.present()
         except Exception:
             pass
 
@@ -674,24 +1142,13 @@ class ClassShareWindow(Adw.ApplicationWindow):
         for selected in files:
             if not selected:
                 continue
-            text_path = str(selected)
-            if text_path in seen:
+            text = str(selected)
+            if text in seen:
                 continue
-            seen.add(text_path)
-            deduplicated.append(text_path)
+            seen.add(text)
+            deduplicated.append(text)
         self.state.selected_files = deduplicated
-        self.state.selected_file = deduplicated[0] if deduplicated else None
         self._refresh_selected_files_ui()
-        self._update_qr_images()
-
-    def _add_selected_files(self, files):
-        self._set_selected_files([*self.state.selected_files, *files])
-
-    def _remove_selected_file(self, file_path):
-        self._set_selected_files([path for path in self.state.selected_files if path != file_path])
-        self.toast_overlay.add_toast(
-            Adw.Toast(title=f"🗑️ {Path(file_path).name} entfernt")
-        )
 
     def _refresh_selected_files_ui(self):
         count = len(self.state.selected_files)
@@ -699,9 +1156,9 @@ class ClassShareWindow(Adw.ApplicationWindow):
 
         child = self.selected_files_listbox.get_first_child()
         while child:
-            next_child = child.get_next_sibling()
+            nxt = child.get_next_sibling()
             self.selected_files_listbox.remove(child)
-            child = next_child
+            child = nxt
 
         for file_path in self.state.selected_files:
             row = Gtk.ListBoxRow()
@@ -720,15 +1177,14 @@ class ClassShareWindow(Adw.ApplicationWindow):
 
             remove_btn = Gtk.Button(label="✕")
             remove_btn.add_css_class("flat")
-            remove_btn.set_tooltip_text("Datei entfernen")
-            remove_btn.connect("clicked", self._on_remove_selected_file, file_path)
+            remove_btn.connect("clicked", self._remove_selected_file, file_path)
             row_box.append(remove_btn)
 
             row.set_child(row_box)
             self.selected_files_listbox.append(row)
 
-    def _on_remove_selected_file(self, _btn, file_path):
-        self._remove_selected_file(file_path)
+    def _remove_selected_file(self, _btn, file_path):
+        self._set_selected_files([path for path in self.state.selected_files if path != file_path])
 
     def _extract_paths_from_file_model(self, files_model):
         paths = []
@@ -742,192 +1198,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
                     if path:
                         paths.append(path)
             return paths
-        try:
-            for file in files_model:
-                if isinstance(file, Gio.File):
-                    path = file.get_path()
-                    if path:
-                        paths.append(path)
-        except TypeError:
-            pass
         return paths
-
-    def _on_drop(self, _target, value, _x, _y):
-        try:
-            if isinstance(value, Gio.File):
-                path = value.get_path()
-                if path:
-                    self._add_selected_files([path])
-                    self.send_btn.set_active(True)
-                    self.collect_btn.set_active(False)
-                    self.stack.set_visible_child_name("send")
-                    self.toast_overlay.add_toast(
-                        Adw.Toast(title=f"📂 {Path(path).name} per Drag & Drop geladen")
-                    )
-                    return True
-            if hasattr(Gdk, "FileList") and isinstance(value, Gdk.FileList):
-                paths = self._extract_paths_from_file_model(value.get_files())
-                if paths:
-                    self._add_selected_files(paths)
-                    self.send_btn.set_active(True)
-                    self.collect_btn.set_active(False)
-                    self.stack.set_visible_child_name("send")
-                    self.toast_overlay.add_toast(
-                        Adw.Toast(title=f"📂 {len(paths)} Datei(en) per Drag & Drop geladen")
-                    )
-                    return True
-        except Exception:
-            pass
-        return False
-
-    def _on_drag_enter(self, _target, _x, _y):
-        self.add_css_class("drop-target")
-        return Gdk.DragAction.COPY
-
-    def _on_drag_leave(self, _target):
-        self.remove_css_class("drop-target")
-
-    # ---------------------------------------------------- settings persistence
-
-    def _load_settings(self):
-        try:
-            if SETTINGS_FILE.exists():
-                data = json.loads(SETTINGS_FILE.read_text())
-                w = data.get("width", 760)
-                h = data.get("height", 640)
-                self.set_default_size(w, h)
-                return
-        except Exception:
-            pass
-        self.set_default_size(760, 640)
-
-    def _save_settings(self):
-        try:
-            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            data = {"width": self.get_width(), "height": self.get_height()}
-            SETTINGS_FILE.write_text(json.dumps(data))
-        except Exception:
-            pass
-
-    def _on_close_request(self, *_):
-        self._save_settings()
-        return False
-
-    # ---------------------------------------------------- launcher badge/progress
-
-    def _update_launcher_badge(self, count: int):
-        try:
-            conn = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-            params = GLib.Variant(
-                "(sa{sv})",
-                (
-                    f"application://{APP_DESKTOP_ID}",
-                    {
-                        "count": GLib.Variant("x", count),
-                        "count-visible": GLib.Variant("b", count > 0),
-                    },
-                ),
-            )
-            conn.call_sync(
-                "com.canonical.Unity",
-                "/com/canonical/Unity/LauncherEntry",
-                "com.canonical.Unity.LauncherEntry",
-                "Update",
-                params,
-                None,
-                Gio.DBusCallFlags.NONE,
-                -1,
-                None,
-            )
-        except Exception:
-            pass
-
-    def _update_launcher_progress(self, value: float, visible: bool):
-        try:
-            conn = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-            params = GLib.Variant(
-                "(sa{sv})",
-                (
-                    f"application://{APP_DESKTOP_ID}",
-                    {
-                        "progress": GLib.Variant("d", value),
-                        "progress-visible": GLib.Variant("b", visible),
-                    },
-                ),
-            )
-            conn.call_sync(
-                "com.canonical.Unity",
-                "/com/canonical/Unity/LauncherEntry",
-                "com.canonical.Unity.LauncherEntry",
-                "Update",
-                params,
-                None,
-                Gio.DBusCallFlags.NONE,
-                -1,
-                None,
-            )
-        except Exception:
-            pass
-
-    # ---------------------------------------------------- page builders
-
-    def _build_send_page(self):
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-
-        self.selected_count_label = Gtk.Label(label="0 Datei(en) ausgewählt")
-        self.selected_count_label.set_xalign(0)
-        box.append(self.selected_count_label)
-
-        file_btn = Gtk.Button(label="Datei wählen")
-        file_btn.connect("clicked", self._choose_file)
-        box.append(file_btn)
-
-        self.selected_files_listbox = Gtk.ListBox()
-        self.selected_files_listbox.add_css_class("boxed-list")
-        self.selected_files_listbox.set_selection_mode(Gtk.SelectionMode.NONE)
-        files_scrolled = Gtk.ScrolledWindow()
-        files_scrolled.set_min_content_height(140)
-        files_scrolled.set_child(self.selected_files_listbox)
-        box.append(files_scrolled)
-
-        self.send_qr = Gtk.Picture()
-        box.append(self.send_qr)
-
-        self._refresh_selected_files_ui()
-        return box
-
-    def _build_collect_page(self):
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-
-        self.collect_start_btn = Gtk.Button(label="Abgabe starten")
-        self.collect_start_btn.add_css_class("suggested-action")
-        self.collect_start_btn.connect("clicked", self._toggle_collecting)
-        box.append(self.collect_start_btn)
-
-        self.collect_qr = Gtk.Picture()
-        box.append(self.collect_qr)
-
-        self.listbox = Gtk.ListBox()
-        self.listbox.add_css_class("boxed-list")
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_vexpand(True)
-        scrolled.set_child(self.listbox)
-        box.append(scrolled)
-
-        return box
-
-    # ---------------------------------------------------- interaction handlers
-
-    def _on_mode_toggled(self, btn, mode):
-        if not btn.get_active():
-            return
-        if mode == "send":
-            self.collect_btn.set_active(False)
-            self.stack.set_visible_child_name("send")
-        else:
-            self.send_btn.set_active(False)
-            self.stack.set_visible_child_name("collect")
-        self._update_qr_images()
 
     def _choose_file(self, *_):
         dialog = Gtk.FileChooserNative.new(
@@ -944,55 +1215,54 @@ class ClassShareWindow(Adw.ApplicationWindow):
     def _on_file_response(self, dialog, response):
         if response == Gtk.ResponseType.ACCEPT:
             paths = self._extract_paths_from_file_model(dialog.get_files())
-            if not paths:
-                file = dialog.get_file()
-                if file:
-                    path = file.get_path()
-                    if path:
-                        paths = [path]
             if paths:
                 self._set_selected_files(paths)
-                self.toast_overlay.add_toast(
-                    Adw.Toast(title=f"📂 {len(paths)} Datei(en) ausgewählt")
-                )
+                self.toast_overlay.add_toast(Adw.Toast(title=f"📂 {len(paths)} Datei(en) ausgewählt"))
         dialog.destroy()
 
-    def _toggle_collecting(self, _btn):
-        self.state.collecting_active = not self.state.collecting_active
-        label = "Abgabe stoppen" if self.state.collecting_active else "Abgabe starten"
-        self.collect_start_btn.set_label(label)
-        self._update_qr_images()
-        if self.state.collecting_active:
-            self._submission_count = 0
-            self.toast_overlay.add_toast(Adw.Toast(title="✅ Abgabe gestartet"))
-        else:
-            count = self._submission_count
-            self._update_launcher_badge(0)
-            self._update_launcher_progress(0.0, False)
-            self.toast_overlay.add_toast(
-                Adw.Toast(title=f"🛑 Abgabe gestoppt – {count} Abgabe(n) eingegangen")
-            )
+    def _send_files_to_students(self, _btn):
+        selected = list(self.state.selected_files)
+        if not selected:
+            self.toast_overlay.add_toast(Adw.Toast(title="Keine Datei ausgewählt"))
+            return
 
-    def _url_for(self, mode):
-        host = self.state.server_ip
-        port = self.state.server_port
-        if mode == "send":
-            if not self.state.selected_files:
-                return f"http://{host}:{port}/files"
-            if len(self.state.selected_files) == 1:
-                filename = Path(self.state.selected_files[0]).name
-                suffix = f"/download?file={quote(filename)}"
-            else:
-                suffix = "/files"
+        target_text = self.target_combo.get_active_text() or "Alle Schüler"
+        all_students = self.state.student_names()
+        if target_text == "Alle Schüler":
+            target_students = all_students
         else:
-            suffix = "/"
-        return f"http://{host}:{port}{suffix}"
+            target_students = [target_text]
+
+        if not target_students:
+            self.toast_overlay.add_toast(Adw.Toast(title="Noch keine Schüler vorhanden"))
+            return
+
+        copied_files = 0
+        with self.state.lock:
+            for student in target_students:
+                self.state.ensure_student_dirs(student)
+                _, received_dir, _ = self.state.student_paths(student)
+                for source_path in selected:
+                    source = Path(source_path)
+                    if not source.exists() or not source.is_file():
+                        continue
+                    filename = sanitize_filename(source.name)
+                    target_name = f"{timestamp_prefix()}__{filename}"
+                    destination = safe_unique_path(received_dir, target_name)
+                    shutil.copy2(source, destination)
+                    copied_files += 1
+                    self.state.push_new_file(student, strip_timestamp_prefix(destination.name), destination.stat().st_size)
+
+        self.refresh_from_state()
+        self.toast_overlay.add_toast(Adw.Toast(title=f"📤 {copied_files} Datei(en) gesendet"))
+
+    def _url_for_students(self):
+        return f"http://{self.state.server_ip}:{self.state.server_port}/"
 
     def _set_qr(self, picture, url):
         if qrcode is None:
             picture.set_paintable(None)
             return
-
         img = qrcode.make(url)
         buffer = io.BytesIO()
         img.save(buffer, format="PNG")
@@ -1000,68 +1270,95 @@ class ClassShareWindow(Adw.ApplicationWindow):
         loader.write(buffer.getvalue())
         loader.close()
         pixbuf = loader.get_pixbuf()
-        texture = Gdk.Texture.new_for_pixbuf(pixbuf)
-        picture.set_paintable(texture)
+        picture.set_paintable(Gdk.Texture.new_for_pixbuf(pixbuf))
 
-    def _update_qr_images(self):
+    def _update_qr(self):
         if self.state.server_port:
-            if self.state.selected_files:
-                self._set_qr(self.send_qr, self._url_for("send"))
-            else:
-                self.send_qr.set_paintable(None)
-            if self.state.collecting_active:
-                self._set_qr(self.collect_qr, self._url_for("collect"))
-            else:
-                self.collect_qr.set_paintable(None)
+            self._set_qr(self.qr_picture, self._url_for_students())
 
-    def _open_received_file(self, _btn, filepath: Path):
-        if not filepath.exists():
-            self.toast_overlay.add_toast(
-                Adw.Toast(title=f"⚠️ Datei nicht gefunden: {filepath.name}")
-            )
-            return
+    def refresh_from_state(self):
+        self._refresh_target_combo()
+        self._refresh_overview_rows()
+        return False
 
-        missing_openers = True
-        last_error = None
-        for opener in ("gio", "xdg-open"):
-            try:
-                command = [opener, "open", str(filepath)] if opener == "gio" else [opener, str(filepath)]
-                subprocess.Popen(command)
-                self.toast_overlay.add_toast(
-                    Adw.Toast(title=f"📄 {filepath.name} wird geöffnet")
-                )
+    def _refresh_target_combo(self):
+        previous = self.target_combo.get_active_text() or "Alle Schüler"
+        names = self.state.student_names()
+        self.target_combo.remove_all()
+        self.target_combo.append_text("Alle Schüler")
+        for name in names:
+            self.target_combo.append_text(name)
+        index = 0
+        if previous != "Alle Schüler" and previous in names:
+            index = names.index(previous) + 1
+        self.target_combo.set_active(index)
+
+    def _refresh_overview_rows(self):
+        child = self.overview_list.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            self.overview_list.remove(child)
+            child = nxt
+
+        for entry in self.state.tutor_overview_rows():
+            row = Gtk.ListBoxRow()
+            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            row_box.set_margin_top(6)
+            row_box.set_margin_bottom(6)
+            row_box.set_margin_start(8)
+            row_box.set_margin_end(8)
+
+            dot = Gtk.Label(label="🟢" if entry["online"] else "⚪")
+            dot.set_width_chars(2)
+            row_box.append(dot)
+
+            name = Gtk.Label(label=entry["name"])
+            name.set_xalign(0)
+            name.set_width_chars(18)
+            row_box.append(name)
+
+            received = Gtk.Label(label=str(entry["received"]))
+            received.set_xalign(0)
+            received.set_width_chars(14)
+            row_box.append(received)
+
+            sent = Gtk.Label(label=str(entry["sent"]))
+            sent.set_xalign(0)
+            sent.set_width_chars(14)
+            row_box.append(sent)
+
+            last_active = Gtk.Label(label=entry["last_active"])
+            last_active.set_xalign(0)
+            last_active.set_width_chars(18)
+            row_box.append(last_active)
+
+            row.set_child(row_box)
+            self.overview_list.append(row)
+
+    def on_student_upload(self, student: str, filename: str, _size: int):
+        self.toast_overlay.add_toast(Adw.Toast(title=f"📥 {student}: {filename}"))
+        self.refresh_from_state()
+        return False
+
+    def _load_settings(self):
+        try:
+            if SETTINGS_FILE.exists():
+                data = json.loads(SETTINGS_FILE.read_text())
+                self.set_default_size(data.get("width", 900), data.get("height", 740))
                 return
-            except FileNotFoundError:
-                continue
-            except OSError as err:
-                missing_openers = False
-                last_error = err
+        except Exception:
+            pass
+        self.set_default_size(900, 740)
 
-        if missing_openers:
-            message = "⚠️ Weder gio noch xdg-open ist verfügbar"
-        elif last_error:
-            message = f"⚠️ Konnte Datei nicht öffnen: {last_error.strerror or 'Unbekannter Fehler'}"
-        else:
-            message = "⚠️ Konnte Datei nicht öffnen"
-        self.toast_overlay.add_toast(Adw.Toast(title=message))
+    def _save_settings(self):
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            SETTINGS_FILE.write_text(json.dumps({"width": self.get_width(), "height": self.get_height()}))
+        except Exception:
+            pass
 
-    def on_upload_received(self, name, timestamp):
-        self._submission_count += 1
-        row = Adw.ActionRow(title=name, subtitle=f"Eingegangen um {timestamp}")
-        filepath = self.state.upload_dir / name
-        if filepath.exists():
-            open_btn = Gtk.Button(icon_name="document-open-symbolic")
-            open_btn.add_css_class("flat")
-            open_btn.set_tooltip_text("Öffnen")
-            open_btn.set_valign(Gtk.Align.CENTER)
-            open_btn.connect("clicked", self._open_received_file, filepath)
-            row.add_suffix(open_btn)
-            row.set_activatable_widget(open_btn)
-        self.listbox.append(row)
-        self.toast_overlay.add_toast(
-            Adw.Toast(title=f"📥 {name} eingegangen ({self._submission_count}. Abgabe)")
-        )
-        self._update_launcher_badge(self._submission_count)
+    def _on_close_request(self, *_):
+        self._save_settings()
         return False
 
 
@@ -1073,15 +1370,15 @@ class ClassShareApp(Adw.Application):
         self.server_thread = None
 
     def do_activate(self):
-        # Follow the system dark/light preference
         try:
-            Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FOLLOW_SYSTEM)
+            Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.DEFAULT)
         except Exception:
             pass
 
         self._start_server()
         self._ensure_desktop_file()
         self._install_icon()
+
         self.win = ClassShareWindow(self)
         self.win.present()
 
@@ -1096,30 +1393,32 @@ class ClassShareApp(Adw.Application):
             return
 
         ClassShareHandler.state = self.state
-        ClassShareHandler.on_upload = self._forward_upload
+        ClassShareHandler.on_state_change = self._forward_state_change
+        ClassShareHandler.on_student_upload = self._forward_student_upload
 
         self.server = ThreadingHTTPServer(("0.0.0.0", 0), ClassShareHandler)
         self.state.server_port = self.server.server_port
         self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.server_thread.start()
 
-    def _forward_upload(self, name, timestamp):
+    def _forward_state_change(self):
         if hasattr(self, "win"):
-            return self.win.on_upload_received(name, timestamp)
+            return self.win.refresh_from_state()
+        return False
+
+    def _forward_student_upload(self, student_name: str, filename: str, size: int):
+        if hasattr(self, "win"):
+            return self.win.on_student_upload(student_name, filename, size)
         return False
 
     def _install_icon(self):
-        """Kopiert das Icon in ~/.local/share/icons/hicolor/scalable/apps/"""
         try:
-            import shutil
             icon_src = Path(__file__).parent / "icons" / "classshare.svg"
             if not icon_src.exists():
                 return
             icon_dir = Path.home() / ".local" / "share" / "icons" / "hicolor" / "scalable" / "apps"
             icon_dir.mkdir(parents=True, exist_ok=True)
-            icon_dst = icon_dir / "gnome-classshare.svg"
-            shutil.copy2(icon_src, icon_dst)
-            # Icon-Cache aktualisieren (falls gtk-update-icon-cache verfügbar)
+            shutil.copy2(icon_src, icon_dir / "gnome-classshare.svg")
             try:
                 subprocess.Popen(
                     ["gtk-update-icon-cache", "-f", "-t", str(Path.home() / ".local" / "share" / "icons" / "hicolor")],
@@ -1132,14 +1431,13 @@ class ClassShareApp(Adw.Application):
             pass
 
     def _ensure_desktop_file(self):
-        """Create a .desktop file so the Unity launcher badge API can find the app."""
         try:
             desktop_dir = Path.home() / ".local" / "share" / "applications"
             desktop_dir.mkdir(parents=True, exist_ok=True)
             desktop_path = desktop_dir / APP_DESKTOP_ID
             if not desktop_path.exists():
                 exec_path = Path(sys.argv[0]).resolve()
-                content = (
+                desktop_path.write_text(
                     "[Desktop Entry]\n"
                     "Name=ClassShare\n"
                     "Comment=Dateien teilen und einsammeln im Schulnetz\n"
@@ -1150,7 +1448,6 @@ class ClassShareApp(Adw.Application):
                     "Categories=Education;Network;\n"
                     "StartupWMClass=ClassShare\n"
                 )
-                desktop_path.write_text(content)
         except Exception:
             pass
 

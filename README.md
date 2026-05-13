@@ -8,48 +8,50 @@ GNOME-App zum Teilen und Einsammeln von Dateien per QR-Code im lokalen Netzwerk.
 python3 gnome-classshare.py
 ```
 
-## Modi
+## Ablauf
 
-### Senden
-1. **Datei(en) wählen** (Mehrfachauswahl möglich)
-2. QR-Code wird angezeigt
-3. Bei einer Datei: Schüler lädt direkt herunter
-4. Bei mehreren Dateien: Schüler sieht eine Download-Liste
+1. Tutor startet die App und zeigt den QR-Code.
+2. Schüler öffnen **eine gemeinsame Seite** (`/`) für Empfang + Upload.
+3. Beim ersten Besuch geben Schüler ihren Namen ein.
+4. Danach erkennt der Server Schüler über Cookie + IP-Kombination.
+5. Alle Daten liegen sortiert unter `~/ClassShare/<Name>/empfangen` und `~/ClassShare/<Name>/gesendet`.
 
-### Einsammeln
-1. **Einsammeln** öffnen
-2. **Abgabe starten** klicken
-3. Schüler scannt den QR-Code und sieht die Seite **„Aufgabe abgeben"**
-4. Datei auswählen + **Abgeben**
-5. Datei landet automatisch in `~/Abgaben/`
-6. In der Liste kann jede eingegangene Datei über **Öffnen** direkt mit der Standard-App geöffnet werden
+## Schüler-Identifikation
 
-## Upload-Verhalten
+- Cookie-Name: `classshare_name` (30 Tage)
+- Reihenfolge:
+  1. gültiger Cookie
+  2. bekannte IP (setzt Cookie neu)
+  3. sonst Namenseingabe
+- Namen müssen eindeutig sein (case-insensitive).
 
-- Upload per `POST /upload` (`multipart/form-data`)
-- Max. Upload-Größe: 100 MB pro Datei
-- Original-Dateiname bleibt erhalten
-- Bei Namenskonflikten wird nummeriert, z. B. `hausaufgabe_2.pdf`
-- Neue Uploads erscheinen sofort in der Liste im App-Fenster
-- Pro neuer Datei erscheint ein Toast: `�� <datei> eingegangen`
+## Tutor-Funktionen
 
-## Hinweis zum Netzwerk
+- Mehrere Dateien auswählen
+- Versand an **Alle Schüler** oder gezielt an einen einzelnen Schüler
+- Live-Übersicht mit:
+  - Name
+  - Dateien erhalten
+  - Dateien gesendet
+  - Zuletzt aktiv
+  - Online-Status (WebSocket)
 
-Der integrierte HTTP-Server bindet an alle lokalen Interfaces (`0.0.0.0`), damit iPads im selben Netzwerk zugreifen können.
-Nutze die App daher nur in vertrauenswürdigen (z. B. schulischen) Netzwerken, da keine Authentifizierung aktiviert ist.
+## Schüler-Seite
 
-## ⚠️ Sicherheitshinweise
+- Empfangene Dateien + gesendete Dateien direkt untereinander (ohne Abschnittstitel)
+- Drag-&-Drop Uploadfeld + klassischer Dateiwähler
+- Abmelden-Button
+- Live-Benachrichtigung: `📄 Neue Datei von Tutor: ...`
+- Automatisches Update der Dateiliste via WebSocket
 
-Diese App startet einen ungeschützten HTTP-Server im lokalen Netzwerk. Folgende Punkte sollten bekannt sein:
+## Sicherheit
 
-- **Keine Authentifizierung:** Jeder im selben WLAN kann Dateien hoch- und herunterladen – nicht nur deine Schüler.
-- **Kein HTTPS:** Die Übertragung ist unverschlüsselt. Für sensible Daten (z. B. Klausuren, Noten) nicht geeignet.
-- **Dateinamen vom Schüler:** Der Original-Dateiname des Schülers wird übernommen. Schädliche Dateinamen werden zwar bereinigt, aber die App wurde nicht auf Sicherheit geprüft.
-- **Kein Virenscan:** Hochgeladene Dateien werden nicht auf Schadsoftware geprüft.
-- **Empfehlung:** Nur im Schulnetzwerk oder einem eigens dafür eingerichteten WLAN nutzen – niemals in einem öffentlichen Netzwerk.
+- Downloads sind nur aus dem eigenen Schüler-Ordner erlaubt.
+- Path-Traversal (`../`, `\`) wird beim Download blockiert.
+- Dateinamen werden vor dem Speichern bereinigt.
+- Upload-Dateien erhalten einen Timestamp-Prefix, um Kollisionen zu vermeiden.
 
-## 🤖 Hinweis zur Entstehung
+## Dark/Light Mode
 
-Diese App wurde vollständig von **GitHub Copilot (KI)** erstellt und wurde **nicht von einem Menschen überprüft oder getestet**. Der Code kann Fehler, Sicherheitslücken oder unerwartetes Verhalten enthalten. Nutzung auf eigene Verantwortung.
-
-Erstellt im Mai 2026 als Unterrichtshilfsmittel für Lehrkräfte auf Linux/GNOME.
+- Browser: automatische Anpassung über `prefers-color-scheme`
+- GTK: folgt automatisch dem System (`Adw.ColorScheme.DEFAULT`)
