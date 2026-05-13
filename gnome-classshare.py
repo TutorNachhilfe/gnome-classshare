@@ -1729,6 +1729,7 @@ class ClassShareApp(Adw.Application):
             if exc.errno == errno.EADDRINUSE:
                 self.win.set_server_error(f"Port {SERVER_PORT} ist bereits belegt. Läuft das Programm schon?")
                 return
+            self.win.set_server_error(None)
             raise
         self.win.set_server_error(None)
         self.win._update_qr()
