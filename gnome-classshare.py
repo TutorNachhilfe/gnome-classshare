@@ -252,8 +252,10 @@ class ClassShareState:
                         "stored_name": file_path.name,
                         "size": stat.st_size,
                         "size_human": format_size(stat.st_size),
+                        "mtime": stat.st_mtime,
                         "timestamp": datetime.fromtimestamp(stat.st_mtime).strftime("%d.%m.%Y %H:%M"),
                         "download": f"/download?scope={scope}&file={quote(file_path.name)}",
+                        "view": f"/view?scope={scope}&file={quote(file_path.name)}",
                     }
                 )
             return items
@@ -263,6 +265,31 @@ class ClassShareState:
             "received": read_dir(received_dir, "received"),
             "sent": read_dir(sent_dir, "sent"),
         }
+
+    def tutor_overview_rows(self):
+        rows = []
+        names = self.student_names()
+        for name in names:
+            _, received_dir, sent_dir = self.student_paths(name)
+            received_count = len([p for p in received_dir.glob("*") if p.is_file()]) if received_dir.exists() else 0
+            sent_files_list = []
+            if sent_dir.exists():
+                sf = sorted([p for p in sent_dir.glob("*") if p.is_file()], key=lambda f: f.stat().st_mtime, reverse=True)
+                for fp in sf:
+                    sent_files_list.append({"filename": strip_timestamp_prefix(fp.name), "path": str(fp), "folder": str(fp.parent)})
+            sent_count = len(sent_files_list)
+            is_online = bool(self.ws_connections.get(name))
+            rows.append(
+                {
+                    "name": name,
+                    "received": received_count,
+                    "sent": sent_count,
+                    "sent_files": sent_files_list,
+                    "last_active": self.last_active.get(name, "-"),
+                    "online": is_online,
+                }
+            )
+        return rows
 
     def sockets_for_name(self, student_name: str):
         sockets = self.ws_connections.get(student_name, set())
@@ -298,24 +325,6 @@ class ClassShareState:
                 self.remove_socket(student_name, sock)
         self.push_file_list(student_name)
 
-    def tutor_overview_rows(self):
-        rows = []
-        names = self.student_names()
-        for name in names:
-            _, received_dir, sent_dir = self.student_paths(name)
-            received_count = len([p for p in received_dir.glob("*") if p.is_file()]) if received_dir.exists() else 0
-            sent_count = len([p for p in sent_dir.glob("*") if p.is_file()]) if sent_dir.exists() else 0
-            is_online = bool(self.ws_connections.get(name))
-            rows.append(
-                {
-                    "name": name,
-                    "received": received_count,
-                    "sent": sent_count,
-                    "last_active": self.last_active.get(name, "-"),
-                    "online": is_online,
-                }
-            )
-        return rows
 
 
 class ClassShareHandler(BaseHTTPRequestHandler):
@@ -411,6 +420,9 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/download":
             self._handle_download(parsed)
+            return
+        if parsed.path == "/view":
+            self._handle_view(parsed)
             return
         if parsed.path == "/ws":
             self._handle_websocket()
@@ -547,17 +559,28 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         --border: #444444;
       }}
     }}
+    *, *::before, *::after {{ box-sizing: border-box; }}
     body {{
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       background: var(--bg);
       color: var(--text);
       display: flex;
-      justify-content: center;
-      padding: 1rem;
-      box-sizing: border-box;
+      flex-direction: column;
+      height: 100dvh;
+      overflow: hidden;
     }}
-    .wrap {{ width: min(900px, 100%); }}
+    .wrap {{
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      overflow: hidden;
+      max-width: 800px;
+      width: 100%;
+      margin: 0 auto;
+      padding: .75rem;
+      gap: .75rem;
+    }}
     .header {{
       display: flex;
       justify-content: space-between;
@@ -566,7 +589,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
       border: 1px solid var(--border);
       border-radius: 14px;
       padding: .75rem 1rem;
-      margin-bottom: .75rem;
+      flex-shrink: 0;
       gap: .75rem;
     }}
     .brand {{ font-weight: 700; font-size: 1.05rem; }}
@@ -580,35 +603,20 @@ class ClassShareHandler(BaseHTTPRequestHandler):
       cursor: pointer;
       font-size: .95rem;
     }}
-    .card {{
+    .main-content {{
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      overflow: hidden;
+      gap: .75rem;
+    }}
+    .dropzone-area {{
+      flex-shrink: 0;
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 14px;
       padding: .8rem;
     }}
-    .list {{ display: grid; gap: .5rem; }}
-    .row {{
-      display: grid;
-      grid-template-columns: 1fr auto auto;
-      gap: .5rem;
-      align-items: center;
-      padding: .65rem;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      background: var(--bg);
-    }}
-    .name {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-    .meta {{ font-size: .86rem; opacity: .8; }}
-    .btn {{
-      border: 0;
-      background: var(--accent);
-      color: #fff;
-      border-radius: 8px;
-      padding: .35rem .65rem;
-      text-decoration: none;
-      font-size: .92rem;
-    }}
-    .sep {{ border: 0; border-top: 1px solid var(--border); margin: .8rem 0; }}
     .drop {{
       border: 2px dashed var(--border);
       border-radius: 12px;
@@ -625,6 +633,81 @@ class ClassShareHandler(BaseHTTPRequestHandler):
       background: var(--accent);
       color: #fff;
       font-weight: 600;
+      cursor: pointer;
+    }}
+    .file-list-area {{
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      min-height: 0;
+    }}
+    .file-list-scroll {{
+      flex: 1;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: .6rem;
+      display: flex;
+      flex-direction: column;
+      gap: .45rem;
+    }}
+    .row {{
+      display: flex;
+      align-items: center;
+      gap: .45rem;
+      padding: .65rem .75rem;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--bg);
+      min-height: 48px;
+    }}
+    .name {{
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+      min-width: 0;
+    }}
+    .meta {{
+      font-size: .84rem;
+      opacity: .75;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }}
+    .btn {{
+      border: 0;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 8px;
+      padding: .35rem .55rem;
+      text-decoration: none;
+      font-size: 1rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 44px;
+      min-height: 44px;
+      flex-shrink: 0;
+    }}
+    .btn-ghost {{
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }}
+    .load-more {{
+      width: 100%;
+      padding: .75rem;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: .9rem;
+      margin-top: .25rem;
     }}
     #toast {{
       position: fixed;
@@ -639,35 +722,54 @@ class ClassShareHandler(BaseHTTPRequestHandler):
       z-index: 20;
       max-width: min(92vw, 560px);
     }}
+    @media (max-width: 480px) {{
+      .wrap {{ padding: .5rem; gap: .5rem; }}
+      .drop {{ padding: 1rem .6rem; }}
+      .meta {{ display: none; }}
+    }}
+    @media (min-width: 481px) and (max-width: 768px) {{
+      .wrap {{ padding: .6rem; gap: .6rem; }}
+    }}
+    @media (orientation: landscape) and (max-width: 1024px) {{
+      .main-content {{ flex-direction: row; }}
+      .dropzone-area {{ width: 40%; flex-shrink: 0; display: flex; flex-direction: column; justify-content: center; }}
+      .file-list-area {{ flex: 1; width: 60%; }}
+    }}
+    @media (min-width: 1025px) {{
+      .row {{ padding: .55rem .75rem; }}
+    }}
   </style>
 </head>
 <body>
   <div id="toast"></div>
-  <main class="wrap">
+  <div class="wrap">
     <div class="header">
       <div class="brand">📚 ClassShare</div>
       <div class="who">👤 {escaped_name} <button id="logout" class="logout">↩️</button></div>
     </div>
-
-    <section class="card">
-      <div id="received" class="list"></div>
-      <hr class="sep">
-      <div id="dropzone" class="drop">
-        <div>📤 Datei hierher ziehen</div>
-        <button id="choose" class="choose" type="button">oder Datei wählen</button>
-        <input id="file-input" type="file" name="files" multiple hidden>
+    <div class="main-content">
+      <div class="dropzone-area">
+        <div id="dropzone" class="drop">
+          <div>📤 Datei hierher ziehen</div>
+          <button id="choose" class="choose" type="button">oder Datei wählen</button>
+          <input id="file-input" type="file" name="files" multiple hidden>
+        </div>
       </div>
-      <hr class="sep">
-      <div id="sent" class="list"></div>
-    </section>
-  </main>
+      <div class="file-list-area">
+        <div id="file-list" class="file-list-scroll"></div>
+      </div>
+    </div>
+  </div>
 
   <script>
     const toast = document.getElementById('toast');
-    const received = document.getElementById('received');
-    const sent = document.getElementById('sent');
     const fileInput = document.getElementById('file-input');
     const dropzone = document.getElementById('dropzone');
+    const fileList = document.getElementById('file-list');
+
+    const PAGE_SIZE = 5;
+    let allFiles = [];
+    let visibleCount = PAGE_SIZE;
 
     function showToast(text) {{
       toast.textContent = text;
@@ -676,29 +778,75 @@ class ClassShareHandler(BaseHTTPRequestHandler):
       showToast._timer = setTimeout(() => toast.style.display = 'none', 3200);
     }}
 
-    function renderRow(file, isSent) {{
+    function renderRow(file) {{
       const row = document.createElement('div');
       row.className = 'row';
-      const ack = isSent ? '✅ ' : '';
-      row.innerHTML = `
-        <div class="name">📄 ${{file.filename}}</div>
-        <div class="meta">${{ack}}${{file.size_human}} · ${{file.timestamp}}</div>
-        <a class="btn" href="${{file.download}}">↓</a>
-      `;
+
+      const icon = file.scope === 'received' ? '📥' : '📤';
+      const ack = file.scope === 'sent' ? '✅\u00a0' : '';
+
+      const nameDiv = document.createElement('div');
+      nameDiv.className = 'name';
+      nameDiv.textContent = icon + '\u00a0' + file.filename;
+
+      const metaDiv = document.createElement('div');
+      metaDiv.className = 'meta';
+      metaDiv.textContent = ack + file.size_human + ' · ' + file.timestamp;
+
+      row.appendChild(nameDiv);
+      row.appendChild(metaDiv);
+
+      if (file.scope === 'received' && file.view) {{
+        const viewBtn = document.createElement('a');
+        viewBtn.className = 'btn btn-ghost';
+        viewBtn.href = file.view;
+        viewBtn.target = '_blank';
+        viewBtn.rel = 'noopener noreferrer';
+        viewBtn.title = 'Anzeigen';
+        viewBtn.textContent = '👁️';
+        row.appendChild(viewBtn);
+      }}
+
+      const dlBtn = document.createElement('a');
+      dlBtn.className = 'btn';
+      dlBtn.href = file.download;
+      dlBtn.title = 'Herunterladen';
+      dlBtn.textContent = '⬇️';
+      row.appendChild(dlBtn);
+
       return row;
     }}
 
-    function renderList(target, files, isSent) {{
-      target.replaceChildren();
-      files.forEach(file => target.appendChild(renderRow(file, isSent)));
+    function renderFiles() {{
+      fileList.replaceChildren();
+      const visible = allFiles.slice(0, visibleCount);
+      visible.forEach(file => fileList.appendChild(renderRow(file)));
+
+      if (allFiles.length > visibleCount) {{
+        const remaining = Math.min(PAGE_SIZE, allFiles.length - visibleCount);
+        const btn = document.createElement('button');
+        btn.className = 'load-more';
+        btn.textContent = remaining + ' weitere anzeigen';
+        btn.onclick = () => {{
+          visibleCount += PAGE_SIZE;
+          renderFiles();
+        }};
+        fileList.appendChild(btn);
+      }}
+    }}
+
+    function updateFiles(data) {{
+      allFiles = [
+        ...(data.received || []).map(f => ({{...f, scope: 'received'}})),
+        ...(data.sent || []).map(f => ({{...f, scope: 'sent'}}))
+      ].sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+      renderFiles();
     }}
 
     async function loadFiles() {{
       const response = await fetch('/api/files', {{ cache: 'no-store' }});
       if (!response.ok) return;
-      const data = await response.json();
-      renderList(received, data.received || [], false);
-      renderList(sent, data.sent || [], true);
+      updateFiles(await response.json());
     }}
 
     async function uploadFiles(files) {{
@@ -742,11 +890,10 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         try {{
           const payload = JSON.parse(event.data);
           if (payload.type === 'new_file') {{
-            showToast(`📄 Neue Datei von Tutor: ${{payload.filename}}`);
+            showToast('📄 Neue Datei von Tutor: ' + payload.filename);
           }}
           if (payload.type === 'file_list') {{
-            renderList(received, payload.received || [], false);
-            renderList(sent, payload.sent || [], true);
+            updateFiles(payload);
           }}
         }} catch (_) {{}}
       }};
@@ -837,6 +984,58 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         download_name = sanitize_filename(strip_timestamp_prefix(file_path.name))
         disposition = f'attachment; filename="{download_name}"'
         self._send_bytes(data, "application/octet-stream", set_cookie=cookie, content_disposition=disposition)
+
+    _CONTENT_TYPE_MAP = {
+        ".pdf": "application/pdf",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+        ".txt": "text/plain; charset=utf-8",
+        ".mp4": "video/mp4",
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".ogg": "audio/ogg",
+        ".htm": "text/html; charset=utf-8",
+        ".html": "text/html; charset=utf-8",
+    }
+
+    def _handle_view(self, parsed_url):
+        student_name, needs_cookie = self._ensure_auth()
+        if not student_name:
+            self._send_html("<h1>Nicht erlaubt</h1>", status=HTTPStatus.FORBIDDEN)
+            return
+
+        params = parse_qs(parsed_url.query)
+        scope = params.get("scope", [""])[0]
+        requested = params.get("file", [""])[0]
+
+        if not requested or requested != Path(requested).name or "\x00" in requested:
+            self._send_html("<h1>Ungültiger Dateiname</h1>", status=HTTPStatus.BAD_REQUEST)
+            return
+
+        _, received_dir, sent_dir = self.state.student_paths(student_name)
+        if scope == "received":
+            directory = received_dir
+        elif scope == "sent":
+            directory = sent_dir
+        else:
+            self._send_html("<h1>Ungültige Anfrage</h1>", status=HTTPStatus.BAD_REQUEST)
+            return
+
+        file_path = directory / requested
+        if not file_path.exists() or not file_path.is_file():
+            self._send_html("<h1>Datei nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
+            return
+
+        data = file_path.read_bytes()
+        cookie = self._issue_cookie_header(student_name) if needs_cookie else None
+        display_name = sanitize_filename(strip_timestamp_prefix(file_path.name))
+        content_type = self._CONTENT_TYPE_MAP.get(file_path.suffix.lower(), "application/octet-stream")
+        disposition = f'inline; filename="{display_name}"'
+        self._send_bytes(data, content_type, set_cookie=cookie, content_disposition=disposition)
 
     def _handle_upload(self):
         student_name, needs_cookie = self._ensure_auth()
@@ -987,13 +1186,32 @@ class ClassShareWindow(Adw.ApplicationWindow):
         root.set_margin_end(12)
         toolbar.set_content(root)
 
-        qr_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        qr_label = Gtk.Label(label="Schüler-Seite")
-        qr_label.set_xalign(0)
-        qr_box.append(qr_label)
+        qr_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        qr_section.set_hexpand(False)
+
+        qr_title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        qr_title_label = Gtk.Label(label="Schüler-Seite")
+        qr_title_label.set_xalign(0)
+        qr_title_label.set_hexpand(True)
+        qr_title_row.append(qr_title_label)
+
+        qr_fullscreen_btn = Gtk.Button(label="⛶ Vollbild")
+        qr_fullscreen_btn.add_css_class("flat")
+        qr_fullscreen_btn.connect("clicked", self._show_qr_fullscreen)
+        qr_title_row.append(qr_fullscreen_btn)
+        qr_section.append(qr_title_row)
+
         self.qr_picture = Gtk.Picture()
-        qr_box.append(self.qr_picture)
-        root.append(qr_box)
+        self.qr_picture.set_size_request(160, 160)
+        qr_section.append(self.qr_picture)
+
+        self.ip_label = Gtk.Label(label="")
+        self.ip_label.set_selectable(True)
+        self.ip_label.set_xalign(0.5)
+        self.ip_label.add_css_class("caption")
+        qr_section.append(self.ip_label)
+
+        root.append(qr_section)
 
         root.append(self._build_send_controls())
         root.append(self._build_tutor_overview())
@@ -1113,6 +1331,67 @@ class ClassShareWindow(Adw.ApplicationWindow):
         else:
             self.unfullscreen()
             self._fullscreen_btn.set_icon_name("view-fullscreen-symbolic")
+
+    def _show_qr_fullscreen(self, *_):
+        if qrcode is None:
+            self.toast_overlay.add_toast(Adw.Toast(title="qrcode nicht installiert (pip install qrcode[pil])"))
+            return
+
+        win = Adw.Window()
+        win.set_title("ClassShare QR-Code")
+        win.set_transient_for(self)
+        win.set_modal(False)
+        win.set_default_size(420, 480)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        outer.set_vexpand(True)
+        outer.set_hexpand(True)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        box.set_margin_top(32)
+        box.set_margin_bottom(32)
+        box.set_margin_start(32)
+        box.set_margin_end(32)
+        box.set_halign(Gtk.Align.CENTER)
+        box.set_valign(Gtk.Align.CENTER)
+        box.set_vexpand(True)
+        box.set_hexpand(True)
+
+        qr_pic = Gtk.Picture()
+        qr_pic.set_size_request(360, 360)
+        qr_pic.set_can_shrink(False)
+        if self.state.server_port:
+            self._set_qr(qr_pic, self._url_for_students())
+        box.append(qr_pic)
+
+        url = self._url_for_students() if self.state.server_port else ""
+        ip_lbl = Gtk.Label(label=url)
+        ip_lbl.set_selectable(True)
+        try:
+            ip_lbl.add_css_class("title-2")
+        except AttributeError:
+            pass
+        box.append(ip_lbl)
+
+        hint = Gtk.Label(label="Klick oder Escape zum Schließen")
+        try:
+            hint.add_css_class("caption")
+        except AttributeError:
+            pass
+        box.append(hint)
+
+        outer.append(box)
+
+        click_ctrl = Gtk.GestureClick()
+        click_ctrl.connect("pressed", lambda *_a: win.close())
+        outer.add_controller(click_ctrl)
+
+        key_ctrl = Gtk.EventControllerKey()
+        key_ctrl.connect("key-pressed", lambda _ctrl, keyval, *_a: win.close() if keyval == Gdk.KEY_Escape else None)
+        win.add_controller(key_ctrl)
+
+        win.set_content(outer)
+        win.present()
 
     def _close_window(self, *_):
         self.close()
@@ -1301,7 +1580,9 @@ class ClassShareWindow(Adw.ApplicationWindow):
 
     def _update_qr(self):
         if self.state.server_port:
-            self._set_qr(self.qr_picture, self._url_for_students())
+            url = self._url_for_students()
+            self._set_qr(self.qr_picture, url)
+            self.ip_label.set_text(url)
 
     def refresh_from_state(self):
         self._refresh_target_combo()
@@ -1329,11 +1610,14 @@ class ClassShareWindow(Adw.ApplicationWindow):
 
         for entry in self.state.tutor_overview_rows():
             row = Gtk.ListBoxRow()
+            row.set_activatable(False)
+            outer_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            outer_box.set_margin_top(6)
+            outer_box.set_margin_bottom(6)
+            outer_box.set_margin_start(8)
+            outer_box.set_margin_end(8)
+
             row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            row_box.set_margin_top(6)
-            row_box.set_margin_bottom(6)
-            row_box.set_margin_start(8)
-            row_box.set_margin_end(8)
 
             dot = Gtk.Label(label="🟢" if entry["online"] else "⚪")
             dot.set_width_chars(2)
@@ -1342,6 +1626,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
             name = Gtk.Label(label=entry["name"])
             name.set_xalign(0)
             name.set_width_chars(18)
+            name.set_ellipsize(Pango.EllipsizeMode.END)
             row_box.append(name)
 
             received = Gtk.Label(label=str(entry["received"]))
@@ -1359,8 +1644,54 @@ class ClassShareWindow(Adw.ApplicationWindow):
             last_active.set_width_chars(18)
             row_box.append(last_active)
 
-            row.set_child(row_box)
+            outer_box.append(row_box)
+
+            sent_files = entry.get("sent_files", [])
+            if sent_files:
+                expander = Gtk.Expander(label=f"📨 {len(sent_files)} {'Datei' if len(sent_files) == 1 else 'Dateien'} eingereicht")
+                files_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+                files_box.set_margin_top(4)
+                files_box.set_margin_start(8)
+                for f in sent_files:
+                    file_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                    file_row.set_margin_top(2)
+                    file_row.set_margin_bottom(2)
+
+                    fname_label = Gtk.Label(label=f["filename"])
+                    fname_label.set_xalign(0)
+                    fname_label.set_hexpand(True)
+                    fname_label.set_ellipsize(Pango.EllipsizeMode.END)
+                    fname_label.set_tooltip_text(f["path"])
+                    file_row.append(fname_label)
+
+                    view_btn = Gtk.Button(label="Anzeigen")
+                    view_btn.add_css_class("flat")
+                    view_btn.connect("clicked", self._open_file, f["path"])
+                    file_row.append(view_btn)
+
+                    dl_btn = Gtk.Button(label="Herunterladen")
+                    dl_btn.add_css_class("flat")
+                    dl_btn.connect("clicked", self._open_folder, f["folder"])
+                    file_row.append(dl_btn)
+
+                    files_box.append(file_row)
+                expander.set_child(files_box)
+                outer_box.append(expander)
+
+            row.set_child(outer_box)
             self.overview_list.append(row)
+
+    def _open_file(self, _btn, path: str):
+        try:
+            subprocess.Popen(["xdg-open", path])
+        except Exception:
+            self.toast_overlay.add_toast(Adw.Toast(title=f"Konnte Datei nicht öffnen: {Path(path).name}"))
+
+    def _open_folder(self, _btn, folder: str):
+        try:
+            subprocess.Popen(["xdg-open", folder])
+        except Exception:
+            self.toast_overlay.add_toast(Adw.Toast(title="Konnte Ordner nicht öffnen"))
 
     def on_student_upload(self, student: str, filename: str, _size: int):
         self.toast_overlay.add_toast(Adw.Toast(title=f"📥 {student}: {filename}"))
