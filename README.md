@@ -10,20 +10,19 @@ python3 gnome-classshare.py
 
 ## Ablauf
 
-1. Tutor startet die App und zeigt den QR-Code.
+1. Tutor startet die App und zeigt den QR-Code (rechts im Fenster).
 2. Schüler öffnen **eine gemeinsame Seite** (`/`) für Empfang + Upload.
-3. Beim ersten Besuch geben Schüler ihren Namen ein.
-4. Danach erkennt der Server Schüler über Cookie + IP-Kombination.
+3. Beim ersten Besuch geben Schüler ihren Namen ein – danach wird er im Browser gespeichert.
+4. Beim nächsten Besuch (auch nach Neustart des Tutor-Programms) einfach denselben Namen eingeben und der alte Verlauf ist sofort wieder sichtbar.
 5. Alle Daten liegen sortiert unter `~/ClassShare/<Name>/empfangen` und `~/ClassShare/<Name>/gesendet`.
 
 ## Schüler-Identifikation
 
-- Cookie-Name: `classshare_name` (30 Tage)
-- Reihenfolge:
-  1. gültiger Cookie
-  2. bekannte IP (setzt Cookie neu)
-  3. sonst Namenseingabe
-- Namen müssen eindeutig sein (case-insensitive).
+- Name wird im **Browser-localStorage** gespeichert – kein Cookie, kein IP-Tracking.
+- Erlaubte Zeichen: Buchstaben (inkl. Umlaute), Zahlen, Leerzeichen, Bindestrich.
+- Ordner-Vergleich ist case-insensitive; originale Schreibweise bleibt erhalten.
+- Bei Neustart des Tutor-Programms reicht es, denselben Namen erneut einzugeben.
+- Abmelden löscht nur den Browser-localStorage-Eintrag; der Ordner bleibt erhalten.
 
 ## Tutor-Funktionen
 
