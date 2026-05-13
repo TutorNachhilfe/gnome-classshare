@@ -795,10 +795,9 @@ class ClassShareHandler(BaseHTTPRequestHandler):
     }
 
     function updateFiles(data) {
-      allFiles = [
-        ...(data.received || []).map(function(f) { return Object.assign({}, f, {scope: 'received'}); }),
-        ...(data.sent || []).map(function(f) { return Object.assign({}, f, {scope: 'sent'}); })
-      ].sort(function(a, b) { return (b.mtime || 0) - (a.mtime || 0); });
+      allFiles = (data.received || [])
+        .map(function(f) { return Object.assign({}, f, {scope: 'received'}); })
+        .sort(function(a, b) { return (b.mtime || 0) - (a.mtime || 0); });
       renderFiles();
     }
 
