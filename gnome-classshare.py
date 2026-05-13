@@ -579,17 +579,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
       border: 1px solid var(--border);
       color: var(--text);
     }
-    .load-more {
-      width: 100%;
-      padding: .75rem;
-      border: 1px solid var(--border);
-      background: var(--bg);
-      color: var(--text);
-      border-radius: 10px;
-      cursor: pointer;
-      font-size: .9rem;
-      margin-top: .25rem;
-    }
+
     #toast {
       position: fixed;
       left: 50%;
@@ -665,9 +655,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
 
     const toast = document.getElementById('toast');
     const fileList = document.getElementById('file-list');
-    const PAGE_SIZE = 5;
     let allFiles = [];
-    let visibleCount = PAGE_SIZE;
     let currentName = '';
     let wsConn = null;
 
@@ -778,20 +766,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
 
     function renderFiles() {
       fileList.replaceChildren();
-      const visible = allFiles.slice(0, visibleCount);
-      visible.forEach(function(file) { fileList.appendChild(renderRow(file)); });
-
-      if (allFiles.length > visibleCount) {
-        const remaining = Math.min(PAGE_SIZE, allFiles.length - visibleCount);
-        const btn = document.createElement('button');
-        btn.className = 'load-more';
-        btn.textContent = remaining + ' weitere anzeigen';
-        btn.onclick = function() {
-          visibleCount += PAGE_SIZE;
-          renderFiles();
-        };
-        fileList.appendChild(btn);
-      }
+      allFiles.forEach(function(file) { fileList.appendChild(renderRow(file)); });
     }
 
     function updateFiles(data) {
