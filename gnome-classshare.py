@@ -423,6 +423,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         --accent: #4da6ff;
         --border: #444444;
       }
+      .logo { filter: invert(1); }
     }
     *, *::before, *::after { box-sizing: border-box; }
     body {
