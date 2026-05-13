@@ -8,6 +8,8 @@ GNOME-App zum Teilen und Einsammeln von Dateien per QR-Code im lokalen Netzwerk.
 python3 gnome-classshare.py
 ```
 
+Die Schüler-Seite läuft dabei fest auf `http://<IP>:8080/`. Falls Port `8080` schon belegt ist, zeigt die GTK-App eine klare Fehlermeldung an.
+
 ## Ablauf
 
 1. Tutor startet die App und zeigt den QR-Code (rechts im Fenster).
