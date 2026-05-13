@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -19,7 +20,7 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import gi
 
@@ -37,6 +38,7 @@ MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
 CONTENT_TOO_LARGE = getattr(HTTPStatus, "CONTENT_TOO_LARGE", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
 COOKIE_NAME = "classshare_name"
 COOKIE_MAX_AGE = 30 * 24 * 60 * 60
+WS_TIMEOUT_SECONDS = 30
 CONFIG_DIR = Path.home() / ".config" / "gnome-classshare"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 APP_DESKTOP_ID = "gnome-classshare.desktop"
@@ -72,6 +74,7 @@ def sanitize_student_name(raw: str) -> str:
 
 def sanitize_filename(raw: str) -> str:
     filename = Path((raw or "").replace("\x00", "")).name
+    filename = re.sub(r"[\x00-\x1f\x7f]", "_", filename)
     filename = re.sub(r"[\\/\r\n\t]", "_", filename)
     filename = re.sub(r"[^A-Za-z0-9äöüÄÖÜß.,()\[\]{}+@=_ -]", "_", filename)
     filename = re.sub(r"\s+", " ", filename).strip(" .")
@@ -94,15 +97,15 @@ def safe_unique_path(directory: Path, filename: str) -> Path:
     return target
 
 
-def cookie_header_for_name(name: str) -> str:
-    return f"{COOKIE_NAME}={quote(name)}; Max-Age={COOKIE_MAX_AGE}; Path=/; SameSite=Lax"
+def cookie_header_for_token(token: str) -> str:
+    return f"{COOKIE_NAME}={token}; Max-Age={COOKIE_MAX_AGE}; Path=/; SameSite=Lax"
 
 
 def cookie_header_clear() -> str:
     return f"{COOKIE_NAME}=; Max-Age=0; Path=/; SameSite=Lax"
 
 
-def parse_cookie_name(cookie_header: str | None) -> str | None:
+def parse_cookie_token(cookie_header: str | None) -> str | None:
     if not cookie_header:
         return None
     cookie = SimpleCookie()
@@ -113,8 +116,10 @@ def parse_cookie_name(cookie_header: str | None) -> str | None:
     morsel = cookie.get(COOKIE_NAME)
     if not morsel:
         return None
-    parsed = unquote(morsel.value)
-    return sanitize_student_name(parsed) or None
+    token = morsel.value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{32}", token):
+        return None
+    return token
 
 
 def strip_timestamp_prefix(filename: str) -> str:
@@ -193,6 +198,7 @@ class ClassShareState:
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
         self.ip_to_name = {}
+        self.cookie_to_name = {}
         self.ws_connections = {}
         self.last_active = {}
         self.selected_files = []
@@ -221,6 +227,13 @@ class ClassShareState:
 
     def touch_active(self, name: str):
         self.last_active[name] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def issue_cookie_token(self, student_name: str) -> str:
+        token = secrets.token_urlsafe(24)
+        while token in self.cookie_to_name:
+            token = secrets.token_urlsafe(24)
+        self.cookie_to_name[token] = student_name
+        return token
 
     def file_list_payload(self, student_name: str):
         _, received_dir, sent_dir = self.student_paths(student_name)
@@ -298,7 +311,7 @@ class ClassShareState:
                     "name": name,
                     "received": received_count,
                     "sent": sent_count,
-                    "last_active": self.last_active.get(name, "-") ,
+                    "last_active": self.last_active.get(name, "-"),
                     "online": is_online,
                 }
             )
@@ -314,29 +327,41 @@ class ClassShareHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
 
-    def _send_bytes(self, content: bytes, content_type: str, status=HTTPStatus.OK, headers=None):
+    def _safe_header_value(self, value: str) -> str:
+        return "".join(ch for ch in str(value) if ch not in "\r\n" and (32 <= ord(ch) <= 126))
+
+    def _send_bytes(
+        self,
+        content: bytes,
+        content_type: str,
+        status=HTTPStatus.OK,
+        *,
+        set_cookie: str | None = None,
+        content_disposition: str | None = None,
+    ):
         self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        if headers:
-            for key, value in headers.items():
-                self.send_header(key, value)
+        self.send_header("Content-Type", self._safe_header_value(content_type))
+        if content_disposition:
+            self.send_header("Content-Disposition", self._safe_header_value(content_disposition))
+        if set_cookie:
+            self.send_header("Set-Cookie", self._safe_header_value(set_cookie))
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)
 
-    def _send_html(self, html: str, status=HTTPStatus.OK, headers=None):
-        self._send_bytes(html.encode("utf-8"), "text/html; charset=utf-8", status=status, headers=headers)
+    def _send_html(self, html: str, status=HTTPStatus.OK, *, set_cookie: str | None = None):
+        self._send_bytes(html.encode("utf-8"), "text/html; charset=utf-8", status=status, set_cookie=set_cookie)
 
-    def _send_json(self, payload: dict, status=HTTPStatus.OK, headers=None):
+    def _send_json(self, payload: dict, status=HTTPStatus.OK, *, set_cookie: str | None = None):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self._send_bytes(data, "application/json; charset=utf-8", status=status, headers=headers)
+        self._send_bytes(data, "application/json; charset=utf-8", status=status, set_cookie=set_cookie)
 
-    def _redirect(self, location: str, headers=None):
+    def _redirect(self, location: str, *, set_cookie: str | None = None):
         self.send_response(HTTPStatus.FOUND)
-        self.send_header("Location", location)
-        if headers:
-            for key, value in headers.items():
-                self.send_header(key, value)
+        safe_location = self._safe_header_value(location)
+        self.send_header("Location", safe_location)
+        if set_cookie:
+            self.send_header("Set-Cookie", self._safe_header_value(set_cookie))
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -347,13 +372,19 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         if self.on_state_change:
             GLib.idle_add(self.on_state_change)
 
+    def _issue_cookie_header(self, student_name: str) -> str:
+        with self.state.lock:
+            token = self.state.issue_cookie_token(student_name)
+        return cookie_header_for_token(token)
+
     def _ensure_auth(self):
         ip = self._client_ip()
-        cookie_name = parse_cookie_name(self.headers.get("Cookie"))
+        cookie_token = parse_cookie_token(self.headers.get("Cookie"))
 
         with self.state.lock:
-            if cookie_name:
-                canonical = self.state.resolve_name(cookie_name)
+            if cookie_token:
+                mapped_name = self.state.cookie_to_name.get(cookie_token)
+                canonical = self.state.resolve_name(mapped_name) if mapped_name else None
                 if canonical:
                     self.state.ensure_student_dirs(canonical)
                     self.state.ip_to_name[ip] = canonical
@@ -405,10 +436,8 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             self._send_html(self._render_name_page())
             return
 
-        headers = {}
-        if needs_cookie:
-            headers["Set-Cookie"] = cookie_header_for_name(student_name)
-        self._send_html(self._render_student_page(student_name), headers=headers)
+        cookie = self._issue_cookie_header(student_name) if needs_cookie else None
+        self._send_html(self._render_student_page(student_name), set_cookie=cookie)
 
     def _render_name_page(self, error: str = ""):
         error_html = f'<p class="error">{escape(error)}</p>' if error else ""
@@ -753,13 +782,16 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             self.state.touch_active(normalized)
 
         self._notify_state_change()
-        self._redirect("/", headers={"Set-Cookie": cookie_header_for_name(normalized)})
+        self._redirect("/", set_cookie=self._issue_cookie_header(normalized))
 
     def _handle_logout(self):
+        cookie_token = parse_cookie_token(self.headers.get("Cookie"))
         with self.state.lock:
             self.state.ip_to_name.pop(self._client_ip(), None)
+            if cookie_token:
+                self.state.cookie_to_name.pop(cookie_token, None)
         self._notify_state_change()
-        self._redirect("/", headers={"Set-Cookie": cookie_header_clear()})
+        self._redirect("/", set_cookie=cookie_header_clear())
 
     def _handle_file_list_api(self):
         student_name, needs_cookie = self._ensure_auth()
@@ -767,13 +799,10 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "nicht angemeldet"}, status=HTTPStatus.UNAUTHORIZED)
             return
 
-        headers = {}
-        if needs_cookie:
-            headers["Set-Cookie"] = cookie_header_for_name(student_name)
-
         with self.state.lock:
             payload = self.state.file_list_payload(student_name)
-        self._send_json(payload, headers=headers)
+        cookie = self._issue_cookie_header(student_name) if needs_cookie else None
+        self._send_json(payload, set_cookie=cookie)
 
     def _handle_download(self, parsed_url):
         student_name, needs_cookie = self._ensure_auth()
@@ -785,7 +814,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         scope = params.get("scope", [""])[0]
         requested = params.get("file", [""])[0]
 
-        if requested != Path(requested).name or any(part in requested for part in ("/", "\\", "\x00")):
+        if requested != Path(requested).name or "\x00" in requested:
             self._send_html("<h1>Ungültiger Dateiname</h1>", status=HTTPStatus.BAD_REQUEST)
             return
 
@@ -804,12 +833,10 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             return
 
         data = file_path.read_bytes()
-        headers = {
-            "Content-Disposition": f'attachment; filename="{strip_timestamp_prefix(file_path.name)}"',
-        }
-        if needs_cookie:
-            headers["Set-Cookie"] = cookie_header_for_name(student_name)
-        self._send_bytes(data, "application/octet-stream", headers=headers)
+        cookie = self._issue_cookie_header(student_name) if needs_cookie else None
+        download_name = sanitize_filename(strip_timestamp_prefix(file_path.name))
+        disposition = f'attachment; filename="{download_name}"'
+        self._send_bytes(data, "application/octet-stream", set_cookie=cookie, content_disposition=disposition)
 
     def _handle_upload(self):
         student_name, needs_cookie = self._ensure_auth()
@@ -828,7 +855,8 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         try:
             content_length = int(self.headers.get("Content-Length", "0") or "0")
         except ValueError:
-            content_length = 0
+            self._send_json({"error": "Ungültige Anfrage"}, status=HTTPStatus.BAD_REQUEST)
+            return
 
         if not boundary or content_length <= 0:
             self._send_json({"error": "Ungültige Anfrage"}, status=HTTPStatus.BAD_REQUEST)
@@ -845,7 +873,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         uploaded_parts = []
         for part in message.iter_parts():
             field_name = part.get_param("name", header="content-disposition")
-            if field_name not in {"file", "files"}:
+            if field_name != "files":
                 continue
             uploaded_name = part.get_filename()
             uploaded_data = part.get_payload(decode=True) or b""
@@ -876,10 +904,8 @@ class ClassShareHandler(BaseHTTPRequestHandler):
                 GLib.idle_add(self.on_student_upload, student_name, entry["filename"], entry["size"])
         self._notify_state_change()
 
-        headers = {}
-        if needs_cookie:
-            headers["Set-Cookie"] = cookie_header_for_name(student_name)
-        self._send_json({"ok": True, "saved": saved}, headers=headers)
+        cookie = self._issue_cookie_header(student_name) if needs_cookie else None
+        self._send_json({"ok": True, "saved": saved}, set_cookie=cookie)
 
     def _handle_websocket(self):
         student_name, needs_cookie = self._ensure_auth()
@@ -901,10 +927,10 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "Upgrade")
         self.send_header("Sec-WebSocket-Accept", accept)
         if needs_cookie:
-            self.send_header("Set-Cookie", cookie_header_for_name(student_name))
+            self.send_header("Set-Cookie", self._safe_header_value(self._issue_cookie_header(student_name)))
         self.end_headers()
 
-        self.connection.settimeout(30)
+        self.connection.settimeout(WS_TIMEOUT_SECONDS)
         with self.state.lock:
             self.state.add_socket(student_name, self.connection)
             _ws_send_json(self.connection, self.state.file_list_payload(student_name))
@@ -931,6 +957,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         except OSError:
             pass
         finally:
+            self.connection.settimeout(None)
             with self.state.lock:
                 self.state.remove_socket(student_name, self.connection)
             self._notify_state_change()
@@ -1371,6 +1398,7 @@ class ClassShareApp(Adw.Application):
 
     def do_activate(self):
         try:
+            # DEFAULT uses the system preference with libadwaita, including auto dark/light switching.
             Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.DEFAULT)
         except Exception:
             pass
