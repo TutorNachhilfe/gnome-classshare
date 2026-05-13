@@ -1700,6 +1700,7 @@ class ClassShareApp(Adw.Application):
         self.state = ClassShareState()
         self.server = None
         self.server_thread = None
+        self.win = None
 
     def do_activate(self):
         try:
@@ -1711,7 +1712,7 @@ class ClassShareApp(Adw.Application):
         self._ensure_desktop_file()
         self._install_icon()
 
-        if not hasattr(self, "win"):
+        if self.win is None:
             self.win = ClassShareWindow(self)
         self.win.present()
 
@@ -1752,12 +1753,12 @@ class ClassShareApp(Adw.Application):
         self.server_thread.start()
 
     def _forward_state_change(self):
-        if hasattr(self, "win"):
+        if self.win is not None:
             return self.win.refresh_from_state()
         return False
 
     def _forward_student_upload(self, student_name: str, filename: str, size: int):
-        if hasattr(self, "win"):
+        if self.win is not None:
             return self.win.on_student_upload(student_name, filename, size)
         return False
 
