@@ -62,7 +62,7 @@ def sanitize_student_name(raw: str) -> str:
     if not normalized:
         return ""
     # Allow letters (including German umlauts), numbers, spaces, hyphens
-    normalized = re.sub(r"[^A-Za-z0-9äöüÄÖÜß \-]", "", normalized)
+    normalized = re.sub(r"[^A-Za-z0-9äöüÄÖÜß -]", "", normalized)
     normalized = re.sub(r" +", " ", normalized)
     normalized = re.sub(r"-+", "-", normalized)
     normalized = normalized.strip(" -")
