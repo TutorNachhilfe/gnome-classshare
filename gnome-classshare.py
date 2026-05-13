@@ -17,6 +17,7 @@ from email.parser import BytesParser
 from email.policy import default as email_default_policy
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from html import escape
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -175,6 +176,8 @@ class ClassShareState:
         self.last_active = {}
         self.selected_files = []
         self.lock = threading.RLock()
+        self.app_name = "ClassShare"
+        self.logo_path = None
 
     def student_names(self):
         names = [p.name for p in self.base_dir.iterdir() if p.is_dir()]
@@ -291,7 +294,6 @@ class ClassShareState:
         self.push_file_list(student_name)
 
 
-
 class ClassShareHandler(BaseHTTPRequestHandler):
     state = None
     on_state_change = None
@@ -355,6 +357,9 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         if parsed.path == "/view":
             self._handle_view(parsed)
             return
+        if parsed.path == "/logo":
+            self._handle_logo()
+            return
         if parsed.path == "/ws":
             self._handle_websocket()
             return
@@ -373,14 +378,35 @@ class ClassShareHandler(BaseHTTPRequestHandler):
     def _handle_root(self):
         self._send_html(self._render_app_page())
 
+    def _handle_logo(self):
+        logo_path = self.state.logo_path
+        if not logo_path:
+            self._send_html("<h1>Nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
+            return
+        path = Path(logo_path)
+        suffix = path.suffix.lower()
+        allowed = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".svg": "image/svg+xml"}
+        if suffix not in allowed or not path.is_file():
+            self._send_html("<h1>Nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
+            return
+        if path.stat().st_size > 10 * 1024 * 1024:
+            self._send_html("<h1>Datei zu groß</h1>", status=HTTPStatus.CONTENT_TOO_LARGE if hasattr(HTTPStatus, "CONTENT_TOO_LARGE") else HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
+        self._send_bytes(path.read_bytes(), allowed[suffix])
+
     def _render_app_page(self):
+        app_name = escape(self.state.app_name or "ClassShare")
+        if self.state.logo_path:
+            brand_html = f'<img src="/logo" alt="{app_name}" class="logo" onerror="this.onerror=null;this.style.display=\'none\'"> {app_name}'
+        else:
+            brand_html = f'&#x1F4DA; {app_name}'
         return """
 <!doctype html>
 <html lang="de">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ClassShare</title>
+  <title>__APP_NAME__</title>
   <style>
     :root {
       --bg: #ffffff;
@@ -474,6 +500,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
       gap: .75rem;
     }
     .brand { font-weight: 700; font-size: 1.05rem; }
+    .logo { height: 1.4em; width: auto; vertical-align: middle; margin-right: .3rem; border-radius: 3px; }
     .who { display: flex; align-items: center; gap: .5rem; }
     .logout {
       border: 1px solid var(--border);
@@ -631,7 +658,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
     <div id="toast"></div>
     <div class="wrap">
       <div class="header">
-        <div class="brand">&#x1F4DA; ClassShare</div>
+        <div class="brand">__BRAND_HTML__</div>
         <div class="who">&#x1F464; <span id="current-name"></span>
           <button id="logout" class="logout">&#x21A9;&#xFE0F;</button></div>
       </div>
@@ -844,7 +871,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
   </script>
 </body>
 </html>
-"""
+""".replace("__APP_NAME__", app_name).replace("__BRAND_HTML__", brand_html)
 
     def _handle_api_login(self):
         content_length = int(self.headers.get("Content-Length", "0") or "0")
@@ -1156,6 +1183,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
         self.ip_label.set_wrap(True)
         self.ip_label.add_css_class("caption")
         right_box.append(self.ip_label)
+        right_box.append(self._build_settings())
 
         self._setup_actions()
         self._load_settings()
@@ -1264,6 +1292,78 @@ class ClassShareWindow(Adw.ApplicationWindow):
 
         return frame
 
+    def _build_settings(self):
+        frame = Gtk.Frame(label="Einstellungen")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+        frame.set_child(box)
+
+        name_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        name_label = Gtk.Label(label="App-Name")
+        name_label.set_xalign(0)
+        name_row.append(name_label)
+        self.app_name_entry = Gtk.Entry()
+        self.app_name_entry.set_text("ClassShare")
+        self.app_name_entry.set_placeholder_text("ClassShare")
+        self.app_name_entry.set_hexpand(True)
+        self.app_name_entry.connect("changed", self._on_app_name_changed)
+        name_row.append(self.app_name_entry)
+        box.append(name_row)
+
+        logo_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        logo_label = Gtk.Label(label="Logo")
+        logo_label.set_xalign(0)
+        logo_row.append(logo_label)
+        self.logo_path_label = Gtk.Label(label="Standard")
+        self.logo_path_label.set_hexpand(True)
+        self.logo_path_label.set_xalign(0)
+        self.logo_path_label.set_ellipsize(Pango.EllipsizeMode.START)
+        logo_row.append(self.logo_path_label)
+        logo_btn = Gtk.Button(label="Durchsuchen")
+        logo_btn.add_css_class("flat")
+        logo_btn.connect("clicked", self._choose_logo)
+        logo_row.append(logo_btn)
+        box.append(logo_row)
+
+        return frame
+
+    def _on_app_name_changed(self, entry):
+        name = entry.get_text().strip() or "ClassShare"
+        self.state.app_name = name
+        self.set_title(name)
+        self._save_settings()
+
+    def _choose_logo(self, *_):
+        dialog = Gtk.FileChooserNative.new(
+            "Logo auswählen",
+            self,
+            Gtk.FileChooserAction.OPEN,
+            "Auswählen",
+            "Abbrechen",
+        )
+        filter_img = Gtk.FileFilter()
+        filter_img.set_name("Bilder (PNG, JPG, SVG)")
+        filter_img.add_mime_type("image/png")
+        filter_img.add_mime_type("image/jpeg")
+        filter_img.add_mime_type("image/svg+xml")
+        dialog.add_filter(filter_img)
+        dialog.connect("response", self._on_logo_response)
+        dialog.show()
+
+    def _on_logo_response(self, dialog, response):
+        if response == Gtk.ResponseType.ACCEPT:
+            file = dialog.get_file()
+            if file:
+                path = file.get_path()
+                if path:
+                    self.state.logo_path = path
+                    self.logo_path_label.set_text(Path(path).name)
+                    self._save_settings()
+        dialog.destroy()
+
     def _toggle_fullscreen(self, *_):
         self._is_fullscreen = not self._is_fullscreen
         if self._is_fullscreen:
@@ -1279,7 +1379,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
             return
 
         win = Adw.Window()
-        win.set_title("ClassShare QR-Code")
+        win.set_title(f"{self.state.app_name} QR-Code")
         win.set_transient_for(self)
         win.set_modal(False)
         win.set_default_size(420, 480)
@@ -1340,7 +1440,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
     def _show_about(self, *_):
         try:
             dialog = Adw.AboutDialog(
-                application_name="ClassShare",
+                application_name=self.state.app_name,
                 version="1.0",
                 comments="Dateien teilen und einsammeln im Schulnetz",
                 license_type=Gtk.License.GPL_3_0,
@@ -1349,7 +1449,6 @@ class ClassShareWindow(Adw.ApplicationWindow):
                 issue_url="https://github.com/TutorNachhilfe/gnome-classshare/issues",
             )
             dialog.present(self)
-            return
         except AttributeError:
             pass
 
@@ -1651,6 +1750,14 @@ class ClassShareWindow(Adw.ApplicationWindow):
             if SETTINGS_FILE.exists():
                 data = json.loads(SETTINGS_FILE.read_text())
                 self.set_default_size(data.get("width", 900), data.get("height", 740))
+                app_name = data.get("app_name", "ClassShare") or "ClassShare"
+                self.state.app_name = app_name
+                self.app_name_entry.set_text(app_name)
+                self.set_title(app_name)
+                logo_path = data.get("logo_path")
+                if logo_path and Path(logo_path).is_file():
+                    self.state.logo_path = logo_path
+                    self.logo_path_label.set_text(Path(logo_path).name)
                 return
         except Exception:
             pass
@@ -1659,7 +1766,13 @@ class ClassShareWindow(Adw.ApplicationWindow):
     def _save_settings(self):
         try:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            SETTINGS_FILE.write_text(json.dumps({"width": self.get_width(), "height": self.get_height()}))
+            data = {
+                "width": self.get_width(),
+                "height": self.get_height(),
+                "app_name": self.state.app_name,
+                "logo_path": self.state.logo_path,
+            }
+            SETTINGS_FILE.write_text(json.dumps(data))
         except Exception:
             pass
 
