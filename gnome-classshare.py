@@ -5,7 +5,6 @@ import hashlib
 import io
 import json
 import re
-import secrets
 import shutil
 import socket
 import subprocess
@@ -15,9 +14,7 @@ from datetime import datetime
 from email.message import Message
 from email.parser import BytesParser
 from email.policy import default as email_default_policy
-from html import escape
 from http import HTTPStatus
-from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -36,8 +33,6 @@ except ImportError:  # pragma: no cover
 
 MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
 CONTENT_TOO_LARGE = getattr(HTTPStatus, "CONTENT_TOO_LARGE", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-COOKIE_NAME = "classshare_name"
-COOKIE_MAX_AGE = 30 * 24 * 60 * 60
 WS_TIMEOUT_SECONDS = 30
 CONFIG_DIR = Path.home() / ".config" / "gnome-classshare"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
@@ -66,9 +61,11 @@ def sanitize_student_name(raw: str) -> str:
     normalized = (raw or "").strip()
     if not normalized:
         return ""
-    normalized = normalized.replace(" ", "_")
-    normalized = re.sub(r"[^A-Za-z0-9_.-]", "_", normalized)
-    normalized = re.sub(r"_+", "_", normalized).strip("._-")
+    # Allow letters (including German umlauts), numbers, spaces, hyphens
+    normalized = re.sub(r"[^A-Za-z0-9äöüÄÖÜß \-]", "", normalized)
+    normalized = re.sub(r" +", " ", normalized)
+    normalized = re.sub(r"-+", "-", normalized)
+    normalized = normalized.strip(" -")
     return normalized[:64]
 
 
@@ -95,31 +92,6 @@ def safe_unique_path(directory: Path, filename: str) -> Path:
         target = directory / f"{stem}_{counter}{suffix}"
         counter += 1
     return target
-
-
-def cookie_header_for_token(token: str) -> str:
-    return f"{COOKIE_NAME}={token}; Max-Age={COOKIE_MAX_AGE}; Path=/; SameSite=Lax"
-
-
-def cookie_header_clear() -> str:
-    return f"{COOKIE_NAME}=; Max-Age=0; Path=/; SameSite=Lax"
-
-
-def parse_cookie_token(cookie_header: str | None) -> str | None:
-    if not cookie_header:
-        return None
-    cookie = SimpleCookie()
-    try:
-        cookie.load(cookie_header)
-    except Exception:
-        return None
-    morsel = cookie.get(COOKIE_NAME)
-    if not morsel:
-        return None
-    token = morsel.value.strip()
-    if not re.fullmatch(r"[A-Za-z0-9_-]{32}", token):
-        return None
-    return token
 
 
 def strip_timestamp_prefix(filename: str) -> str:
@@ -197,8 +169,6 @@ class ClassShareState:
         self.base_dir = CLASSSHARE_ROOT
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-        self.ip_to_name = {}
-        self.cookie_to_name = {}
         self.ws_connections = {}
         self.last_active = {}
         self.selected_files = []
@@ -228,13 +198,6 @@ class ClassShareState:
     def touch_active(self, name: str):
         self.last_active[name] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    def issue_cookie_token(self, student_name: str) -> str:
-        token = secrets.token_urlsafe(24)
-        while token in self.cookie_to_name:
-            token = secrets.token_urlsafe(24)
-        self.cookie_to_name[token] = student_name
-        return token
-
     def file_list_payload(self, student_name: str):
         _, received_dir, sent_dir = self.student_paths(student_name)
 
@@ -254,8 +217,8 @@ class ClassShareState:
                         "size_human": format_size(stat.st_size),
                         "mtime": stat.st_mtime,
                         "timestamp": datetime.fromtimestamp(stat.st_mtime).strftime("%d.%m.%Y %H:%M"),
-                        "download": f"/download?scope={scope}&file={quote(file_path.name)}",
-                        "view": f"/view?scope={scope}&file={quote(file_path.name)}",
+                        "download": f"/download?name={quote(student_name)}&scope={scope}&file={quote(file_path.name)}",
+                        "view": f"/view?name={quote(student_name)}&scope={scope}&file={quote(file_path.name)}",
                     }
                 )
             return items
@@ -345,32 +308,27 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         content_type: str,
         status=HTTPStatus.OK,
         *,
-        set_cookie: str | None = None,
         content_disposition: str | None = None,
     ):
         self.send_response(status)
         self.send_header("Content-Type", self._safe_header_value(content_type))
         if content_disposition:
             self.send_header("Content-Disposition", self._safe_header_value(content_disposition))
-        if set_cookie:
-            self.send_header("Set-Cookie", self._safe_header_value(set_cookie))
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)
 
-    def _send_html(self, html: str, status=HTTPStatus.OK, *, set_cookie: str | None = None):
-        self._send_bytes(html.encode("utf-8"), "text/html; charset=utf-8", status=status, set_cookie=set_cookie)
+    def _send_html(self, html: str, status=HTTPStatus.OK):
+        self._send_bytes(html.encode("utf-8"), "text/html; charset=utf-8", status=status)
 
-    def _send_json(self, payload: dict, status=HTTPStatus.OK, *, set_cookie: str | None = None):
+    def _send_json(self, payload: dict, status=HTTPStatus.OK):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self._send_bytes(data, "application/json; charset=utf-8", status=status, set_cookie=set_cookie)
+        self._send_bytes(data, "application/json; charset=utf-8", status=status)
 
-    def _redirect(self, location: str, *, set_cookie: str | None = None):
+    def _redirect(self, location: str):
         self.send_response(HTTPStatus.FOUND)
         safe_location = self._safe_header_value(location)
         self.send_header("Location", safe_location)
-        if set_cookie:
-            self.send_header("Set-Cookie", self._safe_header_value(set_cookie))
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -381,34 +339,15 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         if self.on_state_change:
             GLib.idle_add(self.on_state_change)
 
-    def _issue_cookie_header(self, student_name: str) -> str:
+    def _name_from_query(self, query_string: str) -> str | None:
+        """Extract and validate the student name from a URL query string."""
+        params = parse_qs(query_string)
+        raw = params.get("name", [""])[0]
+        normalized = sanitize_student_name(raw)
+        if not normalized:
+            return None
         with self.state.lock:
-            token = self.state.issue_cookie_token(student_name)
-        return cookie_header_for_token(token)
-
-    def _ensure_auth(self):
-        ip = self._client_ip()
-        cookie_token = parse_cookie_token(self.headers.get("Cookie"))
-
-        with self.state.lock:
-            if cookie_token:
-                mapped_name = self.state.cookie_to_name.get(cookie_token)
-                canonical = self.state.resolve_name(mapped_name) if mapped_name else None
-                if canonical:
-                    self.state.ensure_student_dirs(canonical)
-                    self.state.ip_to_name[ip] = canonical
-                    self.state.touch_active(canonical)
-                    return canonical, False
-
-            mapped = self.state.ip_to_name.get(ip)
-            if mapped:
-                canonical = self.state.resolve_name(mapped)
-                if canonical:
-                    self.state.ensure_student_dirs(canonical)
-                    self.state.touch_active(canonical)
-                    return canonical, True
-
-        return None, False
+            return self.state.resolve_name(normalized)
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -431,11 +370,8 @@ class ClassShareHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path == "/login":
-            self._handle_login()
-            return
-        if path == "/logout":
-            self._handle_logout()
+        if path == "/api/login":
+            self._handle_api_login()
             return
         if path == "/upload":
             self._handle_upload()
@@ -443,17 +379,10 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         self._send_html("<h1>Nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
 
     def _handle_root(self):
-        student_name, needs_cookie = self._ensure_auth()
-        if not student_name:
-            self._send_html(self._render_name_page())
-            return
+        self._send_html(self._render_app_page())
 
-        cookie = self._issue_cookie_header(student_name) if needs_cookie else None
-        self._send_html(self._render_student_page(student_name), set_cookie=cookie)
-
-    def _render_name_page(self, error: str = ""):
-        error_html = f'<p class="error">{escape(error)}</p>' if error else ""
-        return f"""
+    def _render_app_page(self):
+        return """
 <!doctype html>
 <html lang="de">
 <head>
@@ -461,116 +390,76 @@ class ClassShareHandler(BaseHTTPRequestHandler):
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ClassShare</title>
   <style>
-    :root {{
+    :root {
       --bg: #ffffff;
       --card: #f5f5f5;
       --text: #1a1a1a;
       --accent: #0066cc;
       --border: #e0e0e0;
-    }}
-    @media (prefers-color-scheme: dark) {{
-      :root {{
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
         --bg: #1a1a1a;
         --card: #2d2d2d;
         --text: #f0f0f0;
         --accent: #4da6ff;
         --border: #444444;
-      }}
-    }}
-    body {{
+      }
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       background: var(--bg);
       color: var(--text);
+    }
+
+    /* ── Login screen ── */
+    #login-screen {
       min-height: 100vh;
       display: grid;
       place-items: center;
       padding: 1rem;
-    }}
-    .card {{
-      width: min(820px, 100%);
+    }
+    .card {
+      width: min(420px, 100%);
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 20px;
       padding: 2rem;
-      box-sizing: border-box;
-    }}
-    h1 {{ margin: 0 0 1rem 0; font-size: clamp(2rem, 6vw, 3rem); }}
-    input {{
+    }
+    .card h1 { margin: 0 0 1rem 0; font-size: clamp(1.8rem, 6vw, 2.5rem); }
+    .name-input {
       width: 100%;
-      box-sizing: border-box;
       padding: 1rem;
-      font-size: clamp(1.1rem, 4vw, 1.6rem);
+      font-size: clamp(1rem, 4vw, 1.4rem);
       border-radius: 14px;
       border: 1px solid var(--border);
       background: var(--bg);
       color: var(--text);
-      margin-bottom: 1rem;
-    }}
-    button {{
+      margin-bottom: .75rem;
+    }
+    .login-btn {
       width: 100%;
       padding: 1rem;
       border: 0;
       border-radius: 14px;
-      font-size: clamp(1.1rem, 4vw, 1.5rem);
+      font-size: clamp(1rem, 4vw, 1.3rem);
       font-weight: 700;
       background: var(--accent);
       color: #fff;
-    }}
-    .error {{ color: #e11d48; font-weight: 700; margin: .25rem 0 1rem 0; }}
-  </style>
-</head>
-<body>
-  <main class="card">
-    <h1>👤 Dein Name</h1>
-    {error_html}
-    <form action="/login" method="post">
-      <input name="name" autocomplete="name" placeholder="Vorname_Nachname" required autofocus>
-      <button type="submit">Weiter</button>
-    </form>
-  </main>
-</body>
-</html>
-"""
+      cursor: pointer;
+    }
+    .error { color: #e11d48; font-weight: 700; margin: .25rem 0 .75rem 0; font-size: .95rem; }
 
-    def _render_student_page(self, student_name: str):
-        escaped_name = escape(student_name)
-        return f"""
-<!doctype html>
-<html lang="de">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ClassShare</title>
-  <style>
-    :root {{
-      --bg: #ffffff;
-      --card: #f5f5f5;
-      --text: #1a1a1a;
-      --accent: #0066cc;
-      --border: #e0e0e0;
-    }}
-    @media (prefers-color-scheme: dark) {{
-      :root {{
-        --bg: #1a1a1a;
-        --card: #2d2d2d;
-        --text: #f0f0f0;
-        --accent: #4da6ff;
-        --border: #444444;
-      }}
-    }}
-    *, *::before, *::after {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: var(--bg);
-      color: var(--text);
+    /* ── Student screen ── */
+    #student-screen {
       display: flex;
       flex-direction: column;
       height: 100dvh;
       overflow: hidden;
-    }}
-    .wrap {{
+    }
+    .wrap {
       display: flex;
       flex-direction: column;
       flex: 1;
@@ -580,8 +469,8 @@ class ClassShareHandler(BaseHTTPRequestHandler):
       margin: 0 auto;
       padding: .75rem;
       gap: .75rem;
-    }}
-    .header {{
+    }
+    .header {
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -591,10 +480,10 @@ class ClassShareHandler(BaseHTTPRequestHandler):
       padding: .75rem 1rem;
       flex-shrink: 0;
       gap: .75rem;
-    }}
-    .brand {{ font-weight: 700; font-size: 1.05rem; }}
-    .who {{ display: flex; align-items: center; gap: .5rem; }}
-    .logout {{
+    }
+    .brand { font-weight: 700; font-size: 1.05rem; }
+    .who { display: flex; align-items: center; gap: .5rem; }
+    .logout {
       border: 1px solid var(--border);
       background: transparent;
       color: var(--text);
@@ -602,30 +491,30 @@ class ClassShareHandler(BaseHTTPRequestHandler):
       padding: .35rem .55rem;
       cursor: pointer;
       font-size: .95rem;
-    }}
-    .main-content {{
+    }
+    .main-content {
       display: flex;
       flex-direction: column;
       flex: 1;
       overflow: hidden;
       gap: .75rem;
-    }}
-    .dropzone-area {{
+    }
+    .dropzone-area {
       flex-shrink: 0;
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 14px;
       padding: .8rem;
-    }}
-    .drop {{
+    }
+    .drop {
       border: 2px dashed var(--border);
       border-radius: 12px;
       text-align: center;
       padding: 1.4rem .8rem;
       background: var(--bg);
       cursor: pointer;
-    }}
-    .choose {{
+    }
+    .choose {
       margin-top: .7rem;
       border: 0;
       border-radius: 10px;
@@ -634,8 +523,8 @@ class ClassShareHandler(BaseHTTPRequestHandler):
       color: #fff;
       font-weight: 600;
       cursor: pointer;
-    }}
-    .file-list-area {{
+    }
+    .file-list-area {
       flex: 1;
       overflow: hidden;
       display: flex;
@@ -644,8 +533,8 @@ class ClassShareHandler(BaseHTTPRequestHandler):
       border: 1px solid var(--border);
       border-radius: 14px;
       min-height: 0;
-    }}
-    .file-list-scroll {{
+    }
+    .file-list-scroll {
       flex: 1;
       overflow-y: auto;
       -webkit-overflow-scrolling: touch;
@@ -653,8 +542,8 @@ class ClassShareHandler(BaseHTTPRequestHandler):
       display: flex;
       flex-direction: column;
       gap: .45rem;
-    }}
-    .row {{
+    }
+    .row {
       display: flex;
       align-items: center;
       gap: .45rem;
@@ -663,21 +552,21 @@ class ClassShareHandler(BaseHTTPRequestHandler):
       border-radius: 10px;
       background: var(--bg);
       min-height: 48px;
-    }}
-    .name {{
+    }
+    .name {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
       flex: 1;
       min-width: 0;
-    }}
-    .meta {{
+    }
+    .meta {
       font-size: .84rem;
       opacity: .75;
       white-space: nowrap;
       flex-shrink: 0;
-    }}
-    .btn {{
+    }
+    .btn {
       border: 0;
       background: var(--accent);
       color: #fff;
@@ -692,13 +581,13 @@ class ClassShareHandler(BaseHTTPRequestHandler):
       min-width: 44px;
       min-height: 44px;
       flex-shrink: 0;
-    }}
-    .btn-ghost {{
+    }
+    .btn-ghost {
       background: transparent;
       border: 1px solid var(--border);
       color: var(--text);
-    }}
-    .load-more {{
+    }
+    .load-more {
       width: 100%;
       padding: .75rem;
       border: 1px solid var(--border);
@@ -708,8 +597,8 @@ class ClassShareHandler(BaseHTTPRequestHandler):
       cursor: pointer;
       font-size: .9rem;
       margin-top: .25rem;
-    }}
-    #toast {{
+    }
+    #toast {
       position: fixed;
       left: 50%;
       transform: translateX(-50%);
@@ -721,238 +610,316 @@ class ClassShareHandler(BaseHTTPRequestHandler):
       display: none;
       z-index: 20;
       max-width: min(92vw, 560px);
-    }}
-    @media (max-width: 480px) {{
-      .wrap {{ padding: .5rem; gap: .5rem; }}
-      .drop {{ padding: 1rem .6rem; }}
-      .meta {{ display: none; }}
-    }}
-    @media (min-width: 481px) and (max-width: 768px) {{
-      .wrap {{ padding: .6rem; gap: .6rem; }}
-    }}
-    @media (orientation: landscape) and (max-width: 1024px) {{
-      .main-content {{ flex-direction: row; }}
-      .dropzone-area {{ width: 40%; flex-shrink: 0; display: flex; flex-direction: column; justify-content: center; }}
-      .file-list-area {{ flex: 1; width: 60%; }}
-    }}
-    @media (min-width: 1025px) {{
-      .row {{ padding: .55rem .75rem; }}
-    }}
+    }
+    @media (max-width: 480px) {
+      .wrap { padding: .5rem; gap: .5rem; }
+      .drop { padding: 1rem .6rem; }
+      .meta { display: none; }
+    }
+    @media (min-width: 481px) and (max-width: 768px) {
+      .wrap { padding: .6rem; gap: .6rem; }
+    }
+    @media (orientation: landscape) and (max-width: 1024px) {
+      .main-content { flex-direction: row; }
+      .dropzone-area { width: 40%; flex-shrink: 0; display: flex; flex-direction: column; justify-content: center; }
+      .file-list-area { flex: 1; width: 60%; }
+    }
+    @media (min-width: 1025px) {
+      .row { padding: .55rem .75rem; }
+    }
   </style>
 </head>
 <body>
-  <div id="toast"></div>
-  <div class="wrap">
-    <div class="header">
-      <div class="brand">📚 ClassShare</div>
-      <div class="who">👤 {escaped_name} <button id="logout" class="logout">↩️</button></div>
-    </div>
-    <div class="main-content">
-      <div class="dropzone-area">
-        <div id="dropzone" class="drop">
-          <div>📤 Datei hierher ziehen</div>
-          <button id="choose" class="choose" type="button">oder Datei wählen</button>
-          <input id="file-input" type="file" name="files" multiple hidden>
-        </div>
+
+  <!-- Login screen -->
+  <div id="login-screen">
+    <main class="card">
+      <h1>&#x1F464; Dein Name</h1>
+      <p id="login-error" class="error" style="display:none"></p>
+      <form id="login-form">
+        <input id="name-input" class="name-input" type="text"
+               autocomplete="name" placeholder="Vorname Nachname" required autofocus>
+        <button class="login-btn" type="submit">Weiter &#x2192;</button>
+      </form>
+    </main>
+  </div>
+
+  <!-- Student screen -->
+  <div id="student-screen" style="display:none">
+    <div id="toast"></div>
+    <div class="wrap">
+      <div class="header">
+        <div class="brand">&#x1F4DA; ClassShare</div>
+        <div class="who">&#x1F464; <span id="current-name"></span>
+          <button id="logout" class="logout">&#x21A9;&#xFE0F;</button></div>
       </div>
-      <div class="file-list-area">
-        <div id="file-list" class="file-list-scroll"></div>
+      <div class="main-content">
+        <div class="dropzone-area">
+          <div id="dropzone" class="drop">
+            <div>&#x1F4E4; Datei hierher ziehen</div>
+            <button id="choose" class="choose" type="button">oder Datei w&#xE4;hlen</button>
+            <input id="file-input" type="file" name="files" multiple hidden>
+          </div>
+        </div>
+        <div class="file-list-area">
+          <div id="file-list" class="file-list-scroll"></div>
+        </div>
       </div>
     </div>
   </div>
 
   <script>
-    const toast = document.getElementById('toast');
-    const fileInput = document.getElementById('file-input');
-    const dropzone = document.getElementById('dropzone');
-    const fileList = document.getElementById('file-list');
+    const STORAGE_KEY = 'classshare_name';
 
+    const toast = document.getElementById('toast');
+    const fileList = document.getElementById('file-list');
     const PAGE_SIZE = 5;
     let allFiles = [];
     let visibleCount = PAGE_SIZE;
+    let currentName = '';
+    let wsConn = null;
 
-    function showToast(text) {{
+    function showToast(text) {
       toast.textContent = text;
       toast.style.display = 'block';
       clearTimeout(showToast._timer);
-      showToast._timer = setTimeout(() => toast.style.display = 'none', 3200);
-    }}
+      showToast._timer = setTimeout(() => { toast.style.display = 'none'; }, 3200);
+    }
 
-    function renderRow(file) {{
+    function showLoginScreen() {
+      document.getElementById('login-screen').style.display = 'grid';
+      document.getElementById('student-screen').style.display = 'none';
+    }
+
+    function showStudentScreen(name) {
+      document.getElementById('login-screen').style.display = 'none';
+      document.getElementById('student-screen').style.display = 'flex';
+      document.getElementById('current-name').textContent = name;
+      currentName = name;
+      loadFiles();
+      connectWebSocket();
+    }
+
+    // Check localStorage on load
+    (function init() {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        showStudentScreen(stored);
+      } else {
+        showLoginScreen();
+      }
+    })();
+
+    // Login
+    document.getElementById('login-form').addEventListener('submit', async function(e) {
+      e.preventDefault();
+      const nameInput = document.getElementById('name-input');
+      const errorEl = document.getElementById('login-error');
+      const name = nameInput.value.trim();
+      errorEl.style.display = 'none';
+      try {
+        const response = await fetch('/api/login', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({name: name})
+        });
+        const data = await response.json();
+        if (data.ok) {
+          localStorage.setItem(STORAGE_KEY, data.name);
+          showStudentScreen(data.name);
+        } else {
+          errorEl.textContent = data.error || 'Fehler beim Anmelden';
+          errorEl.style.display = 'block';
+        }
+      } catch (_) {
+        errorEl.textContent = 'Verbindungsfehler';
+        errorEl.style.display = 'block';
+      }
+    });
+
+    // Logout
+    document.getElementById('logout').addEventListener('click', function() {
+      localStorage.removeItem(STORAGE_KEY);
+      currentName = '';
+      if (wsConn) { wsConn.close(); wsConn = null; }
+      location.reload();
+    });
+
+    function renderRow(file) {
       const row = document.createElement('div');
       row.className = 'row';
 
-      const icon = file.scope === 'received' ? '📥' : '📤';
-      const ack = file.scope === 'sent' ? '✅\u00a0' : '';
+      const icon = file.scope === 'received' ? '\\u{1F4E5}' : '\\u{1F4E4}';
+      const ack = file.scope === 'sent' ? '\\u2705\\u00a0' : '';
 
       const nameDiv = document.createElement('div');
       nameDiv.className = 'name';
-      nameDiv.textContent = icon + '\u00a0' + file.filename;
+      nameDiv.textContent = icon + '\\u00a0' + file.filename;
 
       const metaDiv = document.createElement('div');
       metaDiv.className = 'meta';
-      metaDiv.textContent = ack + file.size_human + ' · ' + file.timestamp;
+      metaDiv.textContent = ack + file.size_human + ' \\u00b7 ' + file.timestamp;
 
       row.appendChild(nameDiv);
       row.appendChild(metaDiv);
 
-      if (file.scope === 'received' && file.view) {{
+      if (file.view) {
         const viewBtn = document.createElement('a');
         viewBtn.className = 'btn btn-ghost';
         viewBtn.href = file.view;
         viewBtn.target = '_blank';
         viewBtn.rel = 'noopener noreferrer';
         viewBtn.title = 'Anzeigen';
-        viewBtn.textContent = '👁️';
+        viewBtn.textContent = '\\u{1F441}\\uFE0F';
         row.appendChild(viewBtn);
-      }}
+      }
 
       const dlBtn = document.createElement('a');
       dlBtn.className = 'btn';
       dlBtn.href = file.download;
       dlBtn.title = 'Herunterladen';
-      dlBtn.textContent = '⬇️';
+      dlBtn.textContent = '\\u2B07\\uFE0F';
       row.appendChild(dlBtn);
 
       return row;
-    }}
+    }
 
-    function renderFiles() {{
+    function renderFiles() {
       fileList.replaceChildren();
       const visible = allFiles.slice(0, visibleCount);
-      visible.forEach(file => fileList.appendChild(renderRow(file)));
+      visible.forEach(function(file) { fileList.appendChild(renderRow(file)); });
 
-      if (allFiles.length > visibleCount) {{
+      if (allFiles.length > visibleCount) {
         const remaining = Math.min(PAGE_SIZE, allFiles.length - visibleCount);
         const btn = document.createElement('button');
         btn.className = 'load-more';
         btn.textContent = remaining + ' weitere anzeigen';
-        btn.onclick = () => {{
+        btn.onclick = function() {
           visibleCount += PAGE_SIZE;
           renderFiles();
-        }};
+        };
         fileList.appendChild(btn);
-      }}
-    }}
+      }
+    }
 
-    function updateFiles(data) {{
+    function updateFiles(data) {
       allFiles = [
-        ...(data.received || []).map(f => ({{...f, scope: 'received'}})),
-        ...(data.sent || []).map(f => ({{...f, scope: 'sent'}}))
-      ].sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+        ...(data.received || []).map(function(f) { return Object.assign({}, f, {scope: 'received'}); }),
+        ...(data.sent || []).map(function(f) { return Object.assign({}, f, {scope: 'sent'}); })
+      ].sort(function(a, b) { return (b.mtime || 0) - (a.mtime || 0); });
       renderFiles();
-    }}
+    }
 
-    async function loadFiles() {{
-      const response = await fetch('/api/files', {{ cache: 'no-store' }});
-      if (!response.ok) return;
-      updateFiles(await response.json());
-    }}
+    async function loadFiles() {
+      if (!currentName) return;
+      try {
+        const response = await fetch('/api/files?name=' + encodeURIComponent(currentName), {cache: 'no-store'});
+        if (!response.ok) return;
+        updateFiles(await response.json());
+      } catch (_) {}
+    }
 
-    async function uploadFiles(files) {{
-      if (!files || files.length === 0) return;
+    async function uploadFiles(files) {
+      if (!files || files.length === 0 || !currentName) return;
       const body = new FormData();
       for (const file of files) body.append('files', file);
-      const response = await fetch('/upload', {{ method: 'POST', body }});
-      if (!response.ok) {{
+      try {
+        const response = await fetch('/upload?name=' + encodeURIComponent(currentName), {method: 'POST', body: body});
+        if (!response.ok) {
+          showToast('Upload fehlgeschlagen');
+          return;
+        }
+        await loadFiles();
+        showToast('\\u2705 Datei hochgeladen');
+      } catch (_) {
         showToast('Upload fehlgeschlagen');
-        return;
-      }}
-      await loadFiles();
-      showToast('✅ Datei hochgeladen');
-    }}
+      }
+    }
 
-    document.getElementById('choose').addEventListener('click', () => fileInput.click());
-    fileInput.addEventListener('change', () => uploadFiles(fileInput.files));
+    const fileInput = document.getElementById('file-input');
+    const dropzone = document.getElementById('dropzone');
 
-    dropzone.addEventListener('dragover', (event) => {{
+    document.getElementById('choose').addEventListener('click', function() { fileInput.click(); });
+    fileInput.addEventListener('change', function() { uploadFiles(fileInput.files); });
+
+    dropzone.addEventListener('dragover', function(event) {
       event.preventDefault();
       dropzone.style.borderColor = 'var(--accent)';
-    }});
-    dropzone.addEventListener('dragleave', () => {{
+    });
+    dropzone.addEventListener('dragleave', function() {
       dropzone.style.borderColor = 'var(--border)';
-    }});
-    dropzone.addEventListener('drop', (event) => {{
+    });
+    dropzone.addEventListener('drop', function(event) {
       event.preventDefault();
       dropzone.style.borderColor = 'var(--border)';
       uploadFiles(event.dataTransfer.files);
-    }});
+    });
 
-    document.getElementById('logout').addEventListener('click', async () => {{
-      await fetch('/logout', {{ method: 'POST' }});
-      location.href = '/';
-    }});
-
-    function connectWebSocket() {{
+    function connectWebSocket() {
+      if (!currentName) return;
       const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-      const ws = new WebSocket(`${{scheme}}://${{location.host}}/ws`);
-      ws.onmessage = (event) => {{
-        try {{
+      wsConn = new WebSocket(scheme + '://' + location.host + '/ws?name=' + encodeURIComponent(currentName));
+      wsConn.onmessage = function(event) {
+        try {
           const payload = JSON.parse(event.data);
-          if (payload.type === 'new_file') {{
-            showToast('📄 Neue Datei von Tutor: ' + payload.filename);
-          }}
-          if (payload.type === 'file_list') {{
+          if (payload.type === 'new_file') {
+            showToast('\\u{1F4C4} Neue Datei von Tutor: ' + payload.filename);
+          }
+          if (payload.type === 'file_list') {
             updateFiles(payload);
-          }}
-        }} catch (_) {{}}
-      }};
-      ws.onclose = () => setTimeout(connectWebSocket, 1500);
-    }}
-
-    loadFiles();
-    connectWebSocket();
+          }
+        } catch (_) {}
+      };
+      wsConn.onclose = function() {
+        wsConn = null;
+        if (currentName) setTimeout(connectWebSocket, 1500);
+      };
+    }
   </script>
 </body>
 </html>
 """
 
-    def _handle_login(self):
+    def _handle_api_login(self):
         content_length = int(self.headers.get("Content-Length", "0") or "0")
         if content_length <= 0 or content_length > 16 * 1024:
-            self._send_html(self._render_name_page("Ungültige Eingabe"), status=HTTPStatus.BAD_REQUEST)
+            self._send_json({"error": "Ungültige Eingabe"}, status=HTTPStatus.BAD_REQUEST)
             return
 
         payload = self.rfile.read(content_length).decode("utf-8", errors="replace")
-        submitted = parse_qs(payload).get("name", [""])[0]
+        try:
+            data = json.loads(payload)
+            submitted = data.get("name", "") if isinstance(data, dict) else ""
+        except (json.JSONDecodeError, AttributeError):
+            self._send_json({"error": "Ungültige Eingabe"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
         normalized = sanitize_student_name(submitted)
         if not normalized:
-            self._send_html(self._render_name_page("Bitte einen gültigen Namen eingeben"), status=HTTPStatus.BAD_REQUEST)
+            self._send_json({"error": "Bitte einen gültigen Namen eingeben (Buchstaben, Zahlen, Leerzeichen, Bindestrich)"}, status=HTTPStatus.BAD_REQUEST)
             return
 
         with self.state.lock:
-            if self.state.resolve_name(normalized):
-                self._send_html(self._render_name_page("Dieser Name ist bereits vergeben"), status=HTTPStatus.CONFLICT)
-                return
-            self.state.ensure_student_dirs(normalized)
-            self.state.ip_to_name[self._client_ip()] = normalized
-            self.state.touch_active(normalized)
+            existing = self.state.resolve_name(normalized)
+            canonical = existing if existing else normalized
+            self.state.ensure_student_dirs(canonical)
+            self.state.touch_active(canonical)
 
         self._notify_state_change()
-        self._redirect("/", set_cookie=self._issue_cookie_header(normalized))
-
-    def _handle_logout(self):
-        cookie_token = parse_cookie_token(self.headers.get("Cookie"))
-        with self.state.lock:
-            self.state.ip_to_name.pop(self._client_ip(), None)
-            if cookie_token:
-                self.state.cookie_to_name.pop(cookie_token, None)
-        self._notify_state_change()
-        self._redirect("/", set_cookie=cookie_header_clear())
+        self._send_json({"ok": True, "name": canonical})
 
     def _handle_file_list_api(self):
-        student_name, needs_cookie = self._ensure_auth()
+        student_name = self._name_from_query(urlparse(self.path).query)
         if not student_name:
-            self._send_json({"error": "nicht angemeldet"}, status=HTTPStatus.UNAUTHORIZED)
+            self._send_json({"error": "Unbekannter oder fehlender Name"}, status=HTTPStatus.BAD_REQUEST)
             return
 
         with self.state.lock:
             payload = self.state.file_list_payload(student_name)
-        cookie = self._issue_cookie_header(student_name) if needs_cookie else None
-        self._send_json(payload, set_cookie=cookie)
+        self._send_json(payload)
 
     def _handle_download(self, parsed_url):
-        student_name, needs_cookie = self._ensure_auth()
+        student_name = self._name_from_query(parsed_url.query)
         if not student_name:
             self._send_html("<h1>Nicht erlaubt</h1>", status=HTTPStatus.FORBIDDEN)
             return
@@ -980,10 +947,9 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             return
 
         data = file_path.read_bytes()
-        cookie = self._issue_cookie_header(student_name) if needs_cookie else None
         download_name = sanitize_filename(strip_timestamp_prefix(file_path.name))
         disposition = f'attachment; filename="{download_name}"'
-        self._send_bytes(data, "application/octet-stream", set_cookie=cookie, content_disposition=disposition)
+        self._send_bytes(data, "application/octet-stream", content_disposition=disposition)
 
     _CONTENT_TYPE_MAP = {
         ".pdf": "application/pdf",
@@ -1003,7 +969,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
     }
 
     def _handle_view(self, parsed_url):
-        student_name, needs_cookie = self._ensure_auth()
+        student_name = self._name_from_query(parsed_url.query)
         if not student_name:
             self._send_html("<h1>Nicht erlaubt</h1>", status=HTTPStatus.FORBIDDEN)
             return
@@ -1031,16 +997,15 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             return
 
         data = file_path.read_bytes()
-        cookie = self._issue_cookie_header(student_name) if needs_cookie else None
         display_name = sanitize_filename(strip_timestamp_prefix(file_path.name))
         content_type = self._CONTENT_TYPE_MAP.get(file_path.suffix.lower(), "application/octet-stream")
         disposition = f'inline; filename="{display_name}"'
-        self._send_bytes(data, content_type, set_cookie=cookie, content_disposition=disposition)
+        self._send_bytes(data, content_type, content_disposition=disposition)
 
     def _handle_upload(self):
-        student_name, needs_cookie = self._ensure_auth()
+        student_name = self._name_from_query(urlparse(self.path).query)
         if not student_name:
-            self._send_json({"error": "nicht angemeldet"}, status=HTTPStatus.FORBIDDEN)
+            self._send_json({"error": "Unbekannter oder fehlender Name"}, status=HTTPStatus.FORBIDDEN)
             return
 
         content_type = self.headers.get("Content-Type", "")
@@ -1103,11 +1068,10 @@ class ClassShareHandler(BaseHTTPRequestHandler):
                 GLib.idle_add(self.on_student_upload, student_name, entry["filename"], entry["size"])
         self._notify_state_change()
 
-        cookie = self._issue_cookie_header(student_name) if needs_cookie else None
-        self._send_json({"ok": True, "saved": saved}, set_cookie=cookie)
+        self._send_json({"ok": True, "saved": saved})
 
     def _handle_websocket(self):
-        student_name, needs_cookie = self._ensure_auth()
+        student_name = self._name_from_query(urlparse(self.path).query)
         if not student_name:
             self.send_error(HTTPStatus.FORBIDDEN, "Nicht erlaubt")
             return
@@ -1125,8 +1089,6 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         self.send_header("Upgrade", "websocket")
         self.send_header("Connection", "Upgrade")
         self.send_header("Sec-WebSocket-Accept", accept)
-        if needs_cookie:
-            self.send_header("Set-Cookie", self._safe_header_value(self._issue_cookie_header(student_name)))
         self.end_headers()
 
         self.connection.settimeout(WS_TIMEOUT_SECONDS)
@@ -1179,15 +1141,29 @@ class ClassShareWindow(Adw.ApplicationWindow):
         self.toast_overlay.set_child(toolbar)
         toolbar.add_top_bar(self._build_header())
 
-        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         root.set_margin_top(12)
         root.set_margin_bottom(12)
         root.set_margin_start(12)
         root.set_margin_end(12)
         toolbar.set_content(root)
 
-        qr_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        qr_section.set_hexpand(False)
+        # Left side: send controls + student overview
+        left_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        left_box.set_hexpand(True)
+        left_box.set_vexpand(True)
+        root.append(left_box)
+
+        left_box.append(self._build_send_controls())
+        left_box.append(self._build_tutor_overview())
+
+        # Right side: QR code panel
+        right_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        right_box.set_hexpand(False)
+        right_box.set_vexpand(False)
+        right_box.set_valign(Gtk.Align.START)
+        right_box.set_size_request(220, -1)
+        root.append(right_box)
 
         qr_title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         qr_title_label = Gtk.Label(label="Schüler-Seite")
@@ -1199,22 +1175,18 @@ class ClassShareWindow(Adw.ApplicationWindow):
         qr_fullscreen_btn.add_css_class("flat")
         qr_fullscreen_btn.connect("clicked", self._show_qr_fullscreen)
         qr_title_row.append(qr_fullscreen_btn)
-        qr_section.append(qr_title_row)
+        right_box.append(qr_title_row)
 
         self.qr_picture = Gtk.Picture()
-        self.qr_picture.set_size_request(160, 160)
-        qr_section.append(self.qr_picture)
+        self.qr_picture.set_size_request(250, 250)
+        right_box.append(self.qr_picture)
 
         self.ip_label = Gtk.Label(label="")
         self.ip_label.set_selectable(True)
         self.ip_label.set_xalign(0.5)
+        self.ip_label.set_wrap(True)
         self.ip_label.add_css_class("caption")
-        qr_section.append(self.ip_label)
-
-        root.append(qr_section)
-
-        root.append(self._build_send_controls())
-        root.append(self._build_tutor_overview())
+        right_box.append(self.ip_label)
 
         self._setup_actions()
         self._load_settings()
