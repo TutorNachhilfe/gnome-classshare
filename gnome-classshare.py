@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
+import argparse
 import base64
 import errno
 import hashlib
 import io
 import json
+import logging
 import re
 import shutil
 import socket
@@ -35,7 +37,6 @@ except ImportError:  # pragma: no cover
 
 MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
 CONTENT_TOO_LARGE = getattr(HTTPStatus, "CONTENT_TOO_LARGE", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-SERVER_PORT = 8080
 WS_TIMEOUT_SECONDS = 30
 CONFIG_DIR = Path.home() / ".config" / "gnome-classshare"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
@@ -278,7 +279,7 @@ class ClassShareState:
 
     def push_file_list(self, student_name: str):
         payload = self.file_list_payload(student_name)
-        for sock in self.sockets_for_name(student_name):
+        for sock in list(self.sockets_for_name(student_name)):
             if not _ws_send_json(sock, payload):
                 self.remove_socket(student_name, sock)
 
@@ -288,7 +289,7 @@ class ClassShareState:
             "filename": filename,
             "size": size,
         }
-        for sock in self.sockets_for_name(student_name):
+        for sock in list(self.sockets_for_name(student_name)):
             if not _ws_send_json(sock, payload):
                 self.remove_socket(student_name, sock)
         self.push_file_list(student_name)
@@ -1090,10 +1091,11 @@ class ClassShareHandler(BaseHTTPRequestHandler):
                         data = json.loads(payload.decode("utf-8"))
                         if data.get("type") == "ping":
                             _ws_send_json(self.connection, {"type": "pong"})
-                    except Exception:
-                        pass
-        except OSError:
-            pass
+                    except Exception as exc:
+                        logging.debug("Ungültige WebSocket-Nachricht von %s ignoriert: %s", student_name, exc)
+        except OSError as exc:
+            # Normaler Betriebsfall: Verbindung wurde beendet/unterbrochen.
+            logging.debug("WebSocket-Verbindung für %s beendet: %s", student_name, exc)
         finally:
             self.connection.settimeout(None)
             with self.state.lock:
@@ -1133,8 +1135,8 @@ class ClassShareWindow(Adw.ApplicationWindow):
         self.server_error_label.set_selectable(True)
         try:
             self.server_error_label.add_css_class("error")
-        except AttributeError:
-            pass
+        except AttributeError as exc:
+            logging.debug("GTK-CSS-Klasse 'error' wird nicht unterstützt: %s", exc)
         server_error_frame = Gtk.Frame()
         server_error_frame.set_child(self.server_error_label)
         self.server_error_revealer.set_child(server_error_frame)
@@ -1411,15 +1413,15 @@ class ClassShareWindow(Adw.ApplicationWindow):
         ip_lbl.set_selectable(True)
         try:
             ip_lbl.add_css_class("title-2")
-        except AttributeError:
-            pass
+        except AttributeError as exc:
+            logging.debug("GTK-CSS-Klasse 'title-2' wird nicht unterstützt: %s", exc)
         box.append(ip_lbl)
 
         hint = Gtk.Label(label="Klick oder Escape zum Schließen")
         try:
             hint.add_css_class("caption")
-        except AttributeError:
-            pass
+        except AttributeError as exc:
+            logging.debug("GTK-CSS-Klasse 'caption' wird nicht unterstützt: %s", exc)
         box.append(hint)
 
         outer.append(box)
@@ -1450,8 +1452,8 @@ class ClassShareWindow(Adw.ApplicationWindow):
                 issue_url="https://github.com/TutorNachhilfe/gnome-classshare/issues",
             )
             dialog.present(self)
-        except AttributeError:
-            pass
+        except AttributeError as exc:
+            logging.debug("About-Dialog wird in dieser GTK/Adw-Version nicht unterstützt: %s", exc)
 
     def _show_shortcuts(self, *_):
         try:
@@ -1480,8 +1482,8 @@ class ClassShareWindow(Adw.ApplicationWindow):
             win = builder.get_object("win")
             win.set_transient_for(self)
             win.present()
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.warning("Tastenkürzel-Fenster konnte nicht geöffnet werden: %s", exc)
 
     def _set_selected_files(self, files):
         deduplicated = []
@@ -1732,13 +1734,15 @@ class ClassShareWindow(Adw.ApplicationWindow):
     def _open_file(self, _btn, path: str):
         try:
             subprocess.Popen(["xdg-open", path])
-        except Exception:
+        except Exception as exc:
+            logging.warning("Datei konnte nicht geöffnet werden (%s): %s", path, exc)
             self.toast_overlay.add_toast(Adw.Toast(title=f"Konnte Datei nicht öffnen: {Path(path).name}"))
 
     def _open_folder(self, _btn, folder: str):
         try:
             subprocess.Popen(["xdg-open", folder])
-        except Exception:
+        except Exception as exc:
+            logging.warning("Ordner konnte nicht geöffnet werden (%s): %s", folder, exc)
             self.toast_overlay.add_toast(Adw.Toast(title="Konnte Ordner nicht öffnen"))
 
     def on_student_upload(self, student: str, filename: str, _size: int):
@@ -1760,8 +1764,8 @@ class ClassShareWindow(Adw.ApplicationWindow):
                     self.state.logo_path = logo_path
                     self.logo_path_label.set_text(Path(logo_path).name)
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.warning("Einstellungen konnten nicht geladen werden: %s", exc)
         self.set_default_size(900, 740)
 
     def _save_settings(self):
@@ -1774,8 +1778,8 @@ class ClassShareWindow(Adw.ApplicationWindow):
                 "logo_path": self.state.logo_path,
             }
             SETTINGS_FILE.write_text(json.dumps(data))
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.warning("Einstellungen konnten nicht gespeichert werden: %s", exc)
 
     def _on_close_request(self, *_):
         self._save_settings()
@@ -1783,8 +1787,9 @@ class ClassShareWindow(Adw.ApplicationWindow):
 
 
 class ClassShareApp(Adw.Application):
-    def __init__(self):
+    def __init__(self, server_port: int):
         super().__init__(application_id="com.tutornachhilfe.ClassShare")
+        self.server_port = server_port
         self.state = ClassShareState()
         self.server = None
         self.server_thread = None
@@ -1794,8 +1799,8 @@ class ClassShareApp(Adw.Application):
         try:
             # DEFAULT uses the system preference with libadwaita, including auto dark/light switching.
             Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.DEFAULT)
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.warning("Farbmodus konnte nicht auf Systemvorgabe gesetzt werden: %s", exc)
 
         self._ensure_desktop_file()
         self._install_icon()
@@ -1815,7 +1820,7 @@ class ClassShareApp(Adw.Application):
             self.state.server_port = None
             self.win._update_qr()
             if exc.errno == errno.EADDRINUSE:
-                self.win.set_server_error(f"Port {SERVER_PORT} ist bereits belegt. Läuft das Programm schon?")
+                self.win.set_server_error(f"Port {self.server_port} ist bereits belegt. Läuft das Programm schon?")
                 return
             self.win.set_server_error(None)
             raise
@@ -1836,7 +1841,7 @@ class ClassShareApp(Adw.Application):
         ClassShareHandler.on_state_change = self._forward_state_change
         ClassShareHandler.on_student_upload = self._forward_student_upload
 
-        self.server = ThreadingHTTPServer(("0.0.0.0", SERVER_PORT), ClassShareHandler)
+        self.server = ThreadingHTTPServer(("0.0.0.0", self.server_port), ClassShareHandler)
         self.state.server_port = self.server.server_port
         self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.server_thread.start()
@@ -1865,10 +1870,11 @@ class ClassShareApp(Adw.Application):
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-            except FileNotFoundError:
-                pass
-        except Exception:
-            pass
+            except FileNotFoundError as exc:
+                # Optionales Tool; fehlend ist unkritisch.
+                logging.debug("gtk-update-icon-cache nicht verfügbar: %s", exc)
+        except Exception as exc:
+            logging.warning("Icon konnte nicht installiert werden: %s", exc)
 
     def _ensure_desktop_file(self):
         try:
@@ -1888,12 +1894,23 @@ class ClassShareApp(Adw.Application):
                     "Categories=Education;Network;\n"
                     "StartupWMClass=ClassShare\n"
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.warning("Desktop-Datei konnte nicht erstellt werden: %s", exc)
+
+
+def _parse_args():
+    parser = argparse.ArgumentParser(description="ClassShare Tutor-App")
+    parser.add_argument("--port", type=int, default=8080, help="Port für den integrierten HTTP-Server (Standard: 8080)")
+    args = parser.parse_args()
+    if not (1 <= args.port <= 65535):
+        parser.error("--port muss zwischen 1 und 65535 liegen")
+    return args
 
 
 def main():
-    app = ClassShareApp()
+    logging.basicConfig(level=logging.WARNING)
+    args = _parse_args()
+    app = ClassShareApp(server_port=args.port)
     app.run([])
 
 
