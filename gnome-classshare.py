@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import base64
+import errno
 import hashlib
 import io
 import json
@@ -33,6 +34,7 @@ except ImportError:  # pragma: no cover
 
 MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
 CONTENT_TOO_LARGE = getattr(HTTPStatus, "CONTENT_TOO_LARGE", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+SERVER_PORT = 8080
 WS_TIMEOUT_SECONDS = 30
 CONFIG_DIR = Path.home() / ".config" / "gnome-classshare"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
@@ -324,16 +326,6 @@ class ClassShareHandler(BaseHTTPRequestHandler):
     def _send_json(self, payload: dict, status=HTTPStatus.OK):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self._send_bytes(data, "application/json; charset=utf-8", status=status)
-
-    def _redirect(self, location: str):
-        self.send_response(HTTPStatus.FOUND)
-        safe_location = self._safe_header_value(location)
-        self.send_header("Location", safe_location)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
-
-    def _client_ip(self):
-        return self.client_address[0]
 
     def _notify_state_change(self):
         if self.on_state_change:
@@ -918,19 +910,19 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             payload = self.state.file_list_payload(student_name)
         self._send_json(payload)
 
-    def _handle_download(self, parsed_url):
+    def _resolve_requested_file(self, parsed_url):
         student_name = self._name_from_query(parsed_url.query)
         if not student_name:
             self._send_html("<h1>Nicht erlaubt</h1>", status=HTTPStatus.FORBIDDEN)
-            return
+            return None
 
         params = parse_qs(parsed_url.query)
         scope = params.get("scope", [""])[0]
         requested = params.get("file", [""])[0]
 
-        if requested != Path(requested).name or "\x00" in requested:
+        if not requested or requested != Path(requested).name or "\x00" in requested:
             self._send_html("<h1>Ungültiger Dateiname</h1>", status=HTTPStatus.BAD_REQUEST)
-            return
+            return None
 
         _, received_dir, sent_dir = self.state.student_paths(student_name)
         if scope == "received":
@@ -939,11 +931,17 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             directory = sent_dir
         else:
             self._send_html("<h1>Ungültige Anfrage</h1>", status=HTTPStatus.BAD_REQUEST)
-            return
+            return None
 
         file_path = directory / requested
         if not file_path.exists() or not file_path.is_file():
             self._send_html("<h1>Datei nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
+            return None
+        return file_path
+
+    def _handle_download(self, parsed_url):
+        file_path = self._resolve_requested_file(parsed_url)
+        if file_path is None:
             return
 
         data = file_path.read_bytes()
@@ -969,31 +967,8 @@ class ClassShareHandler(BaseHTTPRequestHandler):
     }
 
     def _handle_view(self, parsed_url):
-        student_name = self._name_from_query(parsed_url.query)
-        if not student_name:
-            self._send_html("<h1>Nicht erlaubt</h1>", status=HTTPStatus.FORBIDDEN)
-            return
-
-        params = parse_qs(parsed_url.query)
-        scope = params.get("scope", [""])[0]
-        requested = params.get("file", [""])[0]
-
-        if not requested or requested != Path(requested).name or "\x00" in requested:
-            self._send_html("<h1>Ungültiger Dateiname</h1>", status=HTTPStatus.BAD_REQUEST)
-            return
-
-        _, received_dir, sent_dir = self.state.student_paths(student_name)
-        if scope == "received":
-            directory = received_dir
-        elif scope == "sent":
-            directory = sent_dir
-        else:
-            self._send_html("<h1>Ungültige Anfrage</h1>", status=HTTPStatus.BAD_REQUEST)
-            return
-
-        file_path = directory / requested
-        if not file_path.exists() or not file_path.is_file():
-            self._send_html("<h1>Datei nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
+        file_path = self._resolve_requested_file(parsed_url)
+        if file_path is None:
             return
 
         data = file_path.read_bytes()
@@ -1141,12 +1116,32 @@ class ClassShareWindow(Adw.ApplicationWindow):
         self.toast_overlay.set_child(toolbar)
         toolbar.add_top_bar(self._build_header())
 
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        content.set_margin_start(12)
+        content.set_margin_end(12)
+        toolbar.set_content(content)
+
+        self.server_error_revealer = Gtk.Revealer()
+        self.server_error_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self.server_error_label = Gtk.Label(label="")
+        self.server_error_label.set_xalign(0)
+        self.server_error_label.set_wrap(True)
+        self.server_error_label.set_selectable(True)
+        try:
+            self.server_error_label.add_css_class("error")
+        except AttributeError:
+            pass
+        server_error_frame = Gtk.Frame()
+        server_error_frame.set_child(self.server_error_label)
+        self.server_error_revealer.set_child(server_error_frame)
+        content.append(self.server_error_revealer)
+
         root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        root.set_margin_top(12)
-        root.set_margin_bottom(12)
-        root.set_margin_start(12)
-        root.set_margin_end(12)
-        toolbar.set_content(root)
+        root.set_hexpand(True)
+        root.set_vexpand(True)
+        content.append(root)
 
         # Left side: send controls + student overview
         left_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -1555,6 +1550,13 @@ class ClassShareWindow(Adw.ApplicationWindow):
             url = self._url_for_students()
             self._set_qr(self.qr_picture, url)
             self.ip_label.set_text(url)
+            return
+        self.qr_picture.set_paintable(None)
+        self.ip_label.set_text("")
+
+    def set_server_error(self, message: str | None):
+        self.server_error_label.set_text(message or "")
+        self.server_error_revealer.set_reveal_child(bool(message))
 
     def refresh_from_state(self):
         self._refresh_target_combo()
@@ -1698,6 +1700,7 @@ class ClassShareApp(Adw.Application):
         self.state = ClassShareState()
         self.server = None
         self.server_thread = None
+        self.win = None
 
     def do_activate(self):
         try:
@@ -1706,12 +1709,30 @@ class ClassShareApp(Adw.Application):
         except Exception:
             pass
 
-        self._start_server()
         self._ensure_desktop_file()
         self._install_icon()
 
-        self.win = ClassShareWindow(self)
+        if self.win is None:
+            self.win = ClassShareWindow(self)
         self.win.present()
+
+        if self.server:
+            self.win.set_server_error(None)
+            self.win._update_qr()
+            return
+
+        try:
+            self._start_server()
+        except OSError as exc:
+            self.state.server_port = None
+            self.win._update_qr()
+            if exc.errno == errno.EADDRINUSE:
+                self.win.set_server_error(f"Port {SERVER_PORT} ist bereits belegt. Läuft das Programm schon?")
+                return
+            self.win.set_server_error(None)
+            raise
+        self.win.set_server_error(None)
+        self.win._update_qr()
 
     def do_shutdown(self):
         if self.server:
@@ -1727,18 +1748,18 @@ class ClassShareApp(Adw.Application):
         ClassShareHandler.on_state_change = self._forward_state_change
         ClassShareHandler.on_student_upload = self._forward_student_upload
 
-        self.server = ThreadingHTTPServer(("0.0.0.0", 0), ClassShareHandler)
+        self.server = ThreadingHTTPServer(("0.0.0.0", SERVER_PORT), ClassShareHandler)
         self.state.server_port = self.server.server_port
         self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.server_thread.start()
 
     def _forward_state_change(self):
-        if hasattr(self, "win"):
+        if self.win is not None:
             return self.win.refresh_from_state()
         return False
 
     def _forward_student_upload(self, student_name: str, filename: str, size: int):
-        if hasattr(self, "win"):
+        if self.win is not None:
             return self.win.on_student_upload(student_name, filename, size)
         return False
 
