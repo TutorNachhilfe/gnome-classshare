@@ -8,7 +8,12 @@ GNOME-App zum Teilen und Einsammeln von Dateien per QR-Code im lokalen Netzwerk.
 python3 gnome-classshare.py
 ```
 
-Die Schüler-Seite läuft dabei fest auf `http://<IP>:8080/`. Falls Port `8080` schon belegt ist, zeigt die GTK-App eine klare Fehlermeldung an.
+Die Schüler-Seite läuft standardmäßig auf `http://<IP>:8080/`.
+Optional kann ein anderer Port gesetzt werden:
+
+```bash
+python3 gnome-classshare.py --port 9090
+```
 
 ## Ablauf
 
