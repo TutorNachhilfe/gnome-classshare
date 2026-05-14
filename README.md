@@ -2,17 +2,31 @@
 
 GNOME-App zum Teilen und Einsammeln von Dateien per QR-Code im lokalen Netzwerk.
 
+## Installation
+
+PyGObject muss über den Paketmanager installiert werden:
+
+```bash
+sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1
+```
+
+Weitere Abhängigkeiten (z. B. QR-Code-Unterstützung) per pip:
+
+```bash
+pip install -r requirements.txt
+```
+
 ## Start
 
 ```bash
-python3 gnome-classshare.py
+python3 app.py
 ```
 
 Die Schüler-Seite läuft standardmäßig auf `http://<IP>:8080/`.
 Optional kann ein anderer Port gesetzt werden:
 
 ```bash
-python3 gnome-classshare.py --port 9090
+python3 app.py --port 9090
 ```
 
 ## Ablauf
@@ -61,3 +75,18 @@ python3 gnome-classshare.py --port 9090
 
 - Browser: automatische Anpassung über `prefers-color-scheme`
 - GTK: folgt automatisch dem System (`Adw.ColorScheme.DEFAULT`)
+
+## Projektstruktur
+
+| Datei | Beschreibung |
+|---|---|
+| `app.py` | Hauptdatei – GTK4/Adwaita-Fenster, Einstellungen, Server-Start |
+| `handler.py` | HTTP-Request-Handler (GET, POST, WebSocket, Upload, Download) |
+| `state.py` | Gemeinsamer Server-Zustand (Schüler, Dateien, WebSocket-Verbindungen) |
+| `constants.py` | Konstanten (Ports, Limits, Pfade) |
+| `utils.py` | Hilfsfunktionen (Dateinamen, Pfade, Timestamps) |
+| `qr_utils.py` | QR-Code-Erzeugung als GTK-Texture |
+| `desktop_integration.py` | Icon- und `.desktop`-Datei-Logik |
+| `student.html` | Schüler-Oberfläche (HTML/CSS/JS-Template) |
+| `shortcuts.ui` | GTK-Tastenkürzel-Fenster (GtkBuilder-XML) |
+| `requirements.txt` | Python-Abhängigkeiten (ohne PyGObject) |
