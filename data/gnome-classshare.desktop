@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=ClassShare
+GenericName=Datei-Sharing für den Unterricht
+Comment=Dateien teilen und einsammeln im Schulnetz
+Exec=classshare
+Icon=gnome-classshare
+Terminal=false
+Type=Application
+Categories=Education;Network;
+StartupWMClass=ClassShare
+Keywords=Schule;Unterricht;Teilen;

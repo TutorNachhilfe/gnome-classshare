@@ -4,16 +4,35 @@ GNOME-App zum Teilen und Einsammeln von Dateien per QR-Code im lokalen Netzwerk.
 
 ## Installation
 
-PyGObject muss über den Paketmanager installiert werden:
-
+### Arch Linux (AUR)
 ```bash
-sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1
+git clone https://github.com/TutorNachhilfe/gnome-classshare.git
+cd gnome-classshare
+makepkg -si
 ```
 
-Weitere Abhängigkeiten (z. B. QR-Code-Unterstützung) per pip:
+### Debian / Ubuntu
+```bash
+sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 python3-pil
+pip install qrcode
+git clone https://github.com/TutorNachhilfe/gnome-classshare.git
+cd gnome-classshare
+sudo make install
+```
 
+### Fedora
+```bash
+sudo dnf install python3-gobject gtk4 libadwaita python3-pillow
+pip install qrcode
+git clone https://github.com/TutorNachhilfe/gnome-classshare.git
+cd gnome-classshare
+sudo make install
+```
+
+### Direkt starten (ohne Installation)
 ```bash
 pip install -r requirements.txt
+python3 app.py
 ```
 
 ## Start
@@ -90,3 +109,9 @@ python3 app.py --port 9090
 | `student.html` | Schüler-Oberfläche (HTML/CSS/JS-Template) |
 | `shortcuts.ui` | GTK-Tastenkürzel-Fenster (GtkBuilder-XML) |
 | `requirements.txt` | Python-Abhängigkeiten (ohne PyGObject) |
+| `Makefile` | `make install` / `make uninstall` für alle Systeme |
+| `PKGBUILD` | Arch Linux / AUR-Paketdefinition |
+| `debian/` | Paketdefinition für Debian/Ubuntu |
+| `gnome-classshare.spec` | RPM-Paketdefinition für Fedora/RHEL/openSUSE |
+| `data/gnome-classshare.desktop` | Desktop-Eintrag für Anwendungsmenü |
+| `data/classshare.sh` | Startskript für `/usr/bin/classshare` |
