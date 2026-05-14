@@ -12,7 +12,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, GLib  # noqa: E402
+from gi.repository import Adw, Gio, GLib  # noqa: E402
 
 from constants import APP_DESKTOP_ID, SERVER_PORT
 from desktop_integration import ensure_desktop_file, install_icon
@@ -69,7 +69,7 @@ class ClassShareApp(Adw.Application):
         if self.server:
             self.server.shutdown()
             self.server.server_close()
-        super().do_shutdown()
+        Gio.Application.do_shutdown(self)
 
     def _start_server(self):
         if self.server:
