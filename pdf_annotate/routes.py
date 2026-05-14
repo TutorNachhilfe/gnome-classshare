@@ -30,17 +30,22 @@ class AnnotationRoutes:
             student_name = params.get("name", [""])[0]
             scope = params.get("scope", [""])[0]
             stored_name = params.get("file", [""])[0]
-            if not student_name or not scope or not stored_name:
+            if not student_name or not stored_name:
                 return None
-            # Prevent directory traversal in individual components
-            if any("\x00" in s or "/" in s or "\\" in s for s in (student_name, stored_name)):
+            # Scope must be exactly one of the two known values
+            if scope not in ("received", "sent"):
+                return None
+            # Prevent directory traversal: components must be plain names with no separators
+            for component in (student_name, stored_name):
+                if not component or "\x00" in component or "/" in component or "\\" in component:
+                    return None
+            # Ensure stored_name has no path components at all
+            if Path(stored_name).name != stored_name:
                 return None
             if scope == "received":
                 pdf_path = CLASSSHARE_ROOT / student_name / "empfangen" / stored_name
-            elif scope == "sent":
-                pdf_path = CLASSSHARE_ROOT / student_name / "gesendet" / stored_name
             else:
-                return None
+                pdf_path = CLASSSHARE_ROOT / student_name / "gesendet" / stored_name
         else:
             # Encoded as an absolute filesystem path
             pdf_path = Path(decoded)

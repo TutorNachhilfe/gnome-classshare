@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import base64
 import json
 import logging
 import shutil
@@ -609,8 +610,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
                     file_row.append(view_btn)
 
                     if f["filename"].lower().endswith(".pdf") and self.state.server_port:
-                        import base64 as _b64
-                        pdf_id = _b64.urlsafe_b64encode(f["path"].encode()).rstrip(b"=").decode()
+                        pdf_id = base64.urlsafe_b64encode(f["path"].encode()).rstrip(b"=").decode()
                         ann_url = f"http://localhost:{self.state.server_port}/annotate?pdf={pdf_id}"
                         ann_btn = Gtk.Button(label="📝 Annotieren")
                         ann_btn.add_css_class("flat")
