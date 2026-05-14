@@ -1,5 +1,3 @@
-# PyGObject (GTK/Adwaita) über den System-Paketmanager installieren:
-# sudo apt install python3-gi
-# PyGObject
+# PyGObject (GTK/Adwaita) über den System-Paketmanager installieren: sudo apt install python3-gi
 qrcode[pil]
 pillow
