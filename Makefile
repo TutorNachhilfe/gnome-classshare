@@ -3,11 +3,12 @@ DESTDIR ?=
 DATADIR = $(DESTDIR)$(PREFIX)/share
 BINDIR  = $(DESTDIR)$(PREFIX)/bin
 
-APPFILES = app.py handler.py state.py utils.py constants.py \
+APPFILES = app.py window.py handler.py state.py utils.py constants.py \
            desktop_integration.py qr_utils.py \
            student.html shortcuts.ui
 
-.PHONY: install uninstall
+.PHONY: install uninstall test
+
 
 install:
 	install -Dm755 -d $(DATADIR)/classshare
@@ -29,3 +30,6 @@ uninstall:
 	rm -f $(BINDIR)/classshare
 	gtk-update-icon-cache -f -t $(DATADIR)/icons/hicolor || true
 	update-desktop-database $(DATADIR)/applications || true
+
+test:
+	python3 tests/test_utils.py
