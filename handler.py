@@ -9,7 +9,7 @@ from html import escape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from constants import CONTENT_TOO_LARGE, MAX_UPLOAD_SIZE_BYTES, WS_TIMEOUT_SECONDS
 from state import _ws_recv_frame, _ws_send_json
@@ -43,11 +43,19 @@ class ClassShareHandler(BaseHTTPRequestHandler):
     ):
         self.send_response(status)
         self.send_header("Content-Type", self._safe_header_value(content_type))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        self.send_header("Cache-Control", "no-store")
         if content_disposition:
             self.send_header("Content-Disposition", self._safe_header_value(content_disposition))
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)
+
+    def _make_disposition(self, disposition_type: str, filename: str) -> str:
+        """Build a Content-Disposition value with RFC 5987 filename* encoding."""
+        encoded_name = quote(filename, safe="")
+        return f'{disposition_type}; filename="{filename}"; filename*=UTF-8\'\'{encoded_name}'
 
     def _send_html(self, html: str, status=HTTPStatus.OK):
         self._send_bytes(html.encode("utf-8"), "text/html; charset=utf-8", status=status)
@@ -675,7 +683,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
 
         data = file_path.read_bytes()
         download_name = sanitize_filename(strip_timestamp_prefix(file_path.name))
-        disposition = f'attachment; filename="{download_name}"'
+        disposition = self._make_disposition("attachment", download_name)
         self._send_bytes(data, "application/octet-stream", content_disposition=disposition)
 
     _CONTENT_TYPE_MAP = {
@@ -703,7 +711,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         data = file_path.read_bytes()
         display_name = sanitize_filename(strip_timestamp_prefix(file_path.name))
         content_type = self._CONTENT_TYPE_MAP.get(file_path.suffix.lower(), "application/octet-stream")
-        disposition = f'inline; filename="{display_name}"'
+        disposition = self._make_disposition("inline", display_name)
         self._send_bytes(data, content_type, content_disposition=disposition)
 
     def _handle_upload(self):
