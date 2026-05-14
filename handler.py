@@ -26,6 +26,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
     on_state_change = None
     on_student_upload = None
     max_upload_size = MAX_UPLOAD_SIZE_BYTES
+    _student_html_template: str | None = None
 
     def log_message(self, fmt, *args):
         return
@@ -143,8 +144,13 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             brand_html = f'<img src="/logo" alt="{app_name}" class="logo" onerror="this.onerror=null;this.style.display=\'none\'"> {app_name}'
         else:
             brand_html = f'&#x1F4DA; {app_name}'
-        template = (Path(__file__).parent / "student.html").read_text(encoding="utf-8")
-        return template.replace("__APP_NAME__", app_name).replace("__BRAND_HTML__", brand_html)
+        if ClassShareHandler._student_html_template is None:
+            try:
+                ClassShareHandler._student_html_template = (Path(__file__).parent / "student.html").read_text(encoding="utf-8")
+            except OSError as exc:
+                logging.error("student.html konnte nicht geladen werden: %s", exc)
+                return "<h1>Fehler: student.html nicht gefunden</h1>"
+        return ClassShareHandler._student_html_template.replace("__APP_NAME__", app_name).replace("__BRAND_HTML__", brand_html)
 
     def _handle_api_login(self):
         content_length = int(self.headers.get("Content-Length", "0") or "0")
