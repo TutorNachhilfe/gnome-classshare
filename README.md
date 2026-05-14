@@ -99,7 +99,8 @@ python3 app.py --port 9090
 
 | Datei | Beschreibung |
 |---|---|
-| `app.py` | Hauptdatei – GTK4/Adwaita-Fenster, Einstellungen, Server-Start |
+| `app.py` | Einstiegspunkt – App-Initialisierung, Server-Start, Argumente |
+| `window.py` | GTK4/Adwaita-Fenster (`ClassShareWindow`) inkl. UI-Logik |
 | `handler.py` | HTTP-Request-Handler (GET, POST, WebSocket, Upload, Download) |
 | `state.py` | Gemeinsamer Server-Zustand (Schüler, Dateien, WebSocket-Verbindungen) |
 | `constants.py` | Konstanten (Ports, Limits, Pfade) |
