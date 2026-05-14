@@ -11,7 +11,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, GdkPixbuf  # noqa: E402
 
 
-def make_qr_texture(url: str) -> object | None:
+def make_qr_texture(url: str) -> Gdk.Texture | None:
     """Erzeugt ein Gdk.Texture aus einer URL als QR-Code. Gibt None zurück wenn qrcode nicht installiert ist."""
     if qrcode is None:
         return None

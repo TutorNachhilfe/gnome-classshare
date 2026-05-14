@@ -20,7 +20,7 @@ from gi.repository import Adw, Gdk, GLib, Gio, Gtk, Pango  # noqa: E402
 from constants import APP_DESKTOP_ID, CONFIG_DIR, SERVER_PORT, SETTINGS_FILE
 from desktop_integration import ensure_desktop_file, install_icon
 from handler import ClassShareHandler
-from qr_utils import make_qr_texture, qrcode
+from qr_utils import make_qr_texture
 from state import ClassShareState
 from utils import safe_unique_path, sanitize_filename, strip_timestamp_prefix, timestamp_prefix
 
@@ -300,7 +300,9 @@ class ClassShareWindow(Adw.ApplicationWindow):
             self._fullscreen_btn.set_icon_name("view-fullscreen-symbolic")
 
     def _show_qr_fullscreen(self, *_):
-        if qrcode is None:
+        url = self._url_for_students() if self.state.server_port else ""
+        fullscreen_texture = make_qr_texture(url) if url else None
+        if url and fullscreen_texture is None:
             self.toast_overlay.add_toast(Adw.Toast(title="qrcode nicht installiert (pip install qrcode[pil])"))
             return
 
@@ -327,11 +329,10 @@ class ClassShareWindow(Adw.ApplicationWindow):
         qr_pic = Gtk.Picture()
         qr_pic.set_size_request(360, 360)
         qr_pic.set_can_shrink(False)
-        if self.state.server_port:
-            self._set_qr(qr_pic, self._url_for_students())
+        if fullscreen_texture is not None:
+            qr_pic.set_paintable(fullscreen_texture)
         box.append(qr_pic)
 
-        url = self._url_for_students() if self.state.server_port else ""
         ip_lbl = Gtk.Label(label=url)
         ip_lbl.set_selectable(True)
         try:
