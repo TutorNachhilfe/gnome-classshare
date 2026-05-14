@@ -117,7 +117,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             self._send_html("<h1>Nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
             return
         if path.stat().st_size > 10 * 1024 * 1024:
-            self._send_html("<h1>Datei zu groß</h1>", status=HTTPStatus.CONTENT_TOO_LARGE if hasattr(HTTPStatus, "CONTENT_TOO_LARGE") else HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            self._send_html("<h1>Datei zu groß</h1>", status=CONTENT_TOO_LARGE)
             return
         self._send_bytes(path.read_bytes(), allowed[suffix])
 
