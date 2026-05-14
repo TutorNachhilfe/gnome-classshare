@@ -208,15 +208,15 @@ class ClassShareState:
             for file_path in files:
                 stat = file_path.stat()
                 sent_at = parse_timestamp_prefix(file_path.name)
-                mtime = sent_at.timestamp() if sent_at else stat.st_mtime
+                sort_dt = sent_at if sent_at else datetime.fromtimestamp(stat.st_mtime)
                 items.append(
                     {
                         "filename": strip_timestamp_prefix(file_path.name),
                         "stored_name": file_path.name,
                         "size": stat.st_size,
                         "size_human": format_size(stat.st_size),
-                        "mtime": mtime,
-                        "timestamp": datetime.fromtimestamp(mtime).strftime("%d.%m.%Y %H:%M"),
+                        "mtime": sort_dt.timestamp(),
+                        "timestamp": sort_dt.strftime("%d.%m.%Y %H:%M"),
                         "download": f"/download?name={quote(student_name)}&scope={scope}&file={quote(file_path.name)}",
                         "view": f"/view?name={quote(student_name)}&scope={scope}&file={quote(file_path.name)}",
                     }
