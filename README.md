@@ -34,7 +34,7 @@ python3 gnome-classshare.py --port 9090
 ## Tutor-Funktionen
 
 - Mehrere Dateien auswählen
-- Versand an **Alle Schüler** oder gezielt an einen einzelnen Schüler
+- Versand an **Alle Online-Schüler** (Standard), **Alle Schüler** oder gezielt an einen einzelnen Schüler
 - Live-Übersicht mit:
   - Name
   - Dateien erhalten
