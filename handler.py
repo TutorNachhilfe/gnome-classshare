@@ -67,8 +67,14 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         return f'{disposition_type}; filename="{ascii_fallback}"; filename*=UTF-8\'\'{encoded}'
 
     def _notify_state_change(self):
-        if self.on_state_change:
-            self.on_state_change()
+        cb = ClassShareHandler.on_state_change
+        if cb:
+            cb()
+
+    def _notify_student_upload(self, student_name: str, filename: str, size: int):
+        cb = ClassShareHandler.on_student_upload
+        if cb:
+            cb(student_name, filename, size)
 
     def _name_from_query(self, query_string: str) -> str | None:
         """Extract and validate the student name from a URL query string."""
@@ -775,9 +781,8 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             self.state.touch_active(student_name)
             self.state.push_file_list(student_name)
 
-        if self.on_student_upload:
-            for entry in saved:
-                self.on_student_upload(student_name, entry["filename"], entry["size"])
+        for entry in saved:
+            self._notify_student_upload(student_name, entry["filename"], entry["size"])
         self._notify_state_change()
 
         self._send_json({"ok": True, "saved": saved})
