@@ -133,7 +133,11 @@ class AnnotationRoutes:
             handler._send_json({"error": "Ungültige pdf_id"}, status=HTTPStatus.BAD_REQUEST)
             return
 
-        content_length = int(handler.headers.get("Content-Length", "0") or "0")
+        try:
+            content_length = int(handler.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            handler._send_json({"error": "Ungültige Anfrage"}, status=HTTPStatus.BAD_REQUEST)
+            return
         if content_length <= 0 or content_length > 10 * 1024 * 1024:
             handler._send_json({"error": "Ungültige Anfrage"}, status=HTTPStatus.BAD_REQUEST)
             return
