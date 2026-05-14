@@ -6,7 +6,6 @@ import io
 import json
 import logging
 import shutil
-import ssl
 import subprocess
 import sys
 import threading
@@ -37,85 +36,6 @@ from server import (
     strip_timestamp_prefix,
     timestamp_prefix,
 )
-
-
-def _generate_or_load_tls_cert(config_dir: Path):
-    """Return (cert_path, key_path) for a self-signed TLS certificate, or None on failure."""
-    cert_path = config_dir / "cert.pem"
-    key_path = config_dir / "key.pem"
-
-    if cert_path.exists() and key_path.exists():
-        return cert_path, key_path
-
-    config_dir.mkdir(parents=True, exist_ok=True)
-
-    # Method 1: use the 'cryptography' package if available
-    try:
-        import datetime as _dt
-        from cryptography import x509
-        from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import rsa
-        from cryptography.x509.oid import NameOID
-
-        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
-        now = _dt.datetime.now(_dt.timezone.utc)
-        cert = (
-            x509.CertificateBuilder()
-            .subject_name(subject)
-            .issuer_name(issuer)
-            .public_key(key.public_key())
-            .serial_number(x509.random_serial_number())
-            .not_valid_before(now)
-            .not_valid_after(now + _dt.timedelta(days=3650))
-            .add_extension(
-                x509.SubjectAlternativeName([x509.DNSName("localhost")]),
-                critical=False,
-            )
-            .sign(key, hashes.SHA256())
-        )
-        key_path.write_bytes(
-            key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.TraditionalOpenSSL,
-                encryption_algorithm=serialization.NoEncryption(),
-            )
-        )
-        cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-        return cert_path, key_path
-    except ImportError:
-        pass
-    except Exception as exc:
-        logging.warning("TLS-Zertifikat konnte nicht mit 'cryptography' generiert werden: %s", exc)
-
-    # Method 2: fall back to the system 'openssl' binary
-    try:
-        subprocess.run(
-            [
-                "openssl", "req", "-x509", "-newkey", "rsa:2048",
-                "-keyout", str(key_path),
-                "-out", str(cert_path),
-                "-days", "3650",
-                "-nodes",
-                "-subj", "/CN=localhost",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=30,
-        )
-        return cert_path, key_path
-    except FileNotFoundError:
-        logging.warning("openssl nicht gefunden – HTTPS nicht verfügbar")
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        logging.warning("TLS-Zertifikat konnte nicht mit openssl generiert werden: %s", exc)
-        # Remove potentially incomplete files
-        for p in (cert_path, key_path):
-            try:
-                p.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-    return None
 
 
 class ClassShareWindow(Adw.ApplicationWindow):
@@ -628,8 +548,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
         self.toast_overlay.add_toast(Adw.Toast(title=f"📤 {copied_files} Datei(en) gesendet"))
 
     def _url_for_students(self):
-        scheme = "https" if self.app.use_https else "http"
-        return f"{scheme}://{self.state.server_ip}:{self.state.server_port}/"
+        return f"http://{self.state.server_ip}:{self.state.server_port}/"
 
     def _set_qr(self, picture, url):
         if qrcode is None:
@@ -820,7 +739,6 @@ class ClassShareApp(Adw.Application):
         self.server = None
         self.server_thread = None
         self.win = None
-        self.use_https = False
 
     def do_activate(self):
         try:
@@ -837,7 +755,7 @@ class ClassShareApp(Adw.Application):
         self.win.present()
 
         if self.server:
-            self._update_tls_status_in_ui()
+            self.win._update_qr()
             return
 
         try:
@@ -850,7 +768,7 @@ class ClassShareApp(Adw.Application):
                 return
             self.win.set_server_error(None)
             raise
-        self._update_tls_status_in_ui()
+        self.win._update_qr()
 
     def do_shutdown(self):
         if self.server:
@@ -870,31 +788,9 @@ class ClassShareApp(Adw.Application):
 
         self.server = ThreadingHTTPServer(("0.0.0.0", self.server_port), ClassShareHandler)
 
-        tls = _generate_or_load_tls_cert(CONFIG_DIR)
-        if tls:
-            cert_path, key_path = tls
-            try:
-                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-                ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-                ctx.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
-                self.server.socket = ctx.wrap_socket(self.server.socket, server_side=True)
-                self.use_https = True
-            except Exception as exc:
-                logging.warning("HTTPS konnte nicht aktiviert werden: %s", exc)
-                self.use_https = False
-        else:
-            self.use_https = False
-
         self.state.server_port = self.server.server_port
         self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.server_thread.start()
-
-    def _update_tls_status_in_ui(self):
-        if not self.use_https:
-            self.win.set_server_error("⚠️ HTTPS nicht verfügbar – Verbindung ist unverschlüsselt (HTTP)")
-        else:
-            self.win.set_server_error(None)
-        self.win._update_qr()
 
     def _forward_state_change(self):
         if self.win is not None:
