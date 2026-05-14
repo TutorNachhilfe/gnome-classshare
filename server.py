@@ -87,6 +87,16 @@ def strip_timestamp_prefix(filename: str) -> str:
     return filename
 
 
+def parse_timestamp_prefix(filename: str) -> datetime | None:
+    if "__" not in filename:
+        return None
+    prefix = filename.split("__", 1)[0]
+    try:
+        return datetime.strptime(prefix, "%Y%m%d_%H%M%S_%f")
+    except ValueError:
+        return None
+
+
 def _ws_send_text(sock, text: str) -> bool:
     payload = text.encode("utf-8")
     frame = bytearray([0x81])
@@ -195,21 +205,23 @@ class ClassShareState:
             if not path.exists():
                 return items
             files = [f for f in path.iterdir() if f.is_file()]
-            files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
             for file_path in files:
                 stat = file_path.stat()
+                sent_at = parse_timestamp_prefix(file_path.name)
+                sort_dt = sent_at if sent_at else datetime.fromtimestamp(stat.st_mtime)
                 items.append(
                     {
                         "filename": strip_timestamp_prefix(file_path.name),
                         "stored_name": file_path.name,
                         "size": stat.st_size,
                         "size_human": format_size(stat.st_size),
-                        "mtime": stat.st_mtime,
-                        "timestamp": datetime.fromtimestamp(stat.st_mtime).strftime("%d.%m.%Y %H:%M"),
+                        "mtime": sort_dt.timestamp(),
+                        "timestamp": sort_dt.strftime("%d.%m.%Y %H:%M"),
                         "download": f"/download?name={quote(student_name)}&scope={scope}&file={quote(file_path.name)}",
                         "view": f"/view?name={quote(student_name)}&scope={scope}&file={quote(file_path.name)}",
                     }
                 )
+            items.sort(key=lambda item: item["mtime"], reverse=True)
             return items
 
         return {
