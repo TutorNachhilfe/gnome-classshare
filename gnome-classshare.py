@@ -2,7 +2,6 @@
 
 import argparse
 import errno
-import io
 import json
 import logging
 import shutil
@@ -16,16 +15,12 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gdk, GdkPixbuf, GLib, Gio, Gtk, Pango  # noqa: E402
-
-try:
-    import qrcode
-except ImportError:  # pragma: no cover
-    qrcode = None
+from gi.repository import Adw, Gdk, GLib, Gio, Gtk, Pango  # noqa: E402
 
 from constants import APP_DESKTOP_ID, CONFIG_DIR, SERVER_PORT, SETTINGS_FILE
 from desktop_integration import ensure_desktop_file, install_icon
 from handler import ClassShareHandler
+from qr_utils import make_qr_texture, qrcode
 from state import ClassShareState
 from utils import safe_unique_path, sanitize_filename, strip_timestamp_prefix, timestamp_prefix
 
@@ -385,28 +380,8 @@ class ClassShareWindow(Adw.ApplicationWindow):
 
     def _show_shortcuts(self, *_):
         try:
-            xml = """<?xml version="1.0" encoding="UTF-8"?>
-<interface>
-  <object class="GtkShortcutsWindow" id="win">
-    <property name="modal">1</property>
-    <child>
-      <object class="GtkShortcutsSection">
-        <child>
-          <object class="GtkShortcutsGroup">
-            <property name="title">Datei</property>
-            <child>
-              <object class="GtkShortcutsShortcut">
-                <property name="title">Datei öffnen</property>
-                <property name="accelerator">&lt;Primary&gt;o</property>
-              </object>
-            </child>
-          </object>
-        </child>
-      </object>
-    </child>
-  </object>
-</interface>"""
-            builder = Gtk.Builder.new_from_string(xml, -1)
+            ui_file = Path(__file__).parent / "shortcuts.ui"
+            builder = Gtk.Builder.new_from_file(str(ui_file))
             win = builder.get_object("win")
             win.set_transient_for(self)
             win.present()
@@ -543,17 +518,8 @@ class ClassShareWindow(Adw.ApplicationWindow):
         return f"http://{self.state.server_ip}:{self.state.server_port}/"
 
     def _set_qr(self, picture, url):
-        if qrcode is None:
-            picture.set_paintable(None)
-            return
-        img = qrcode.make(url)
-        buffer = io.BytesIO()
-        img.save(buffer, format="PNG")
-        loader = GdkPixbuf.PixbufLoader.new_with_type("png")
-        loader.write(buffer.getvalue())
-        loader.close()
-        pixbuf = loader.get_pixbuf()
-        picture.set_paintable(Gdk.Texture.new_for_pixbuf(pixbuf))
+        texture = make_qr_texture(url)
+        picture.set_paintable(texture)
 
     def _update_qr(self):
         if self.state.server_port:

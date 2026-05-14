@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <object class="GtkShortcutsWindow" id="win">
+    <property name="modal">1</property>
+    <child>
+      <object class="GtkShortcutsSection">
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title">Datei</property>
+            <child>
+              <object class="GtkShortcutsShortcut">
+                <property name="title">Datei öffnen</property>
+                <property name="accelerator">&lt;Primary&gt;o</property>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+  </object>
+</interface>
