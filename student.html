@@ -379,6 +379,18 @@
         row.appendChild(viewBtn);
       }
 
+      if (file.filename.toLowerCase().endsWith('.pdf') && file.download) {
+        const pdfId = btoa(file.download).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        const annBtn = document.createElement('a');
+        annBtn.className = 'btn btn-ghost';
+        annBtn.href = '/annotate?pdf=' + pdfId;
+        annBtn.target = '_blank';
+        annBtn.rel = 'noopener noreferrer';
+        annBtn.title = 'Annotieren';
+        annBtn.textContent = '\u{1F4DD}';
+        row.appendChild(annBtn);
+      }
+
       const dlBtn = document.createElement('a');
       dlBtn.className = 'btn';
       dlBtn.href = file.download;

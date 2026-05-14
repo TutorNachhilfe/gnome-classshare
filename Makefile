@@ -15,6 +15,12 @@ install:
 	for f in $(APPFILES); do \
 		test -f $$f && install -Dm644 $$f $(DATADIR)/classshare/$$f || true; \
 	done
+	install -Dm755 -d $(DATADIR)/classshare/pdf_annotate
+	install -Dm644 pdf_annotate/__init__.py $(DATADIR)/classshare/pdf_annotate/__init__.py
+	install -Dm644 pdf_annotate/storage.py $(DATADIR)/classshare/pdf_annotate/storage.py
+	install -Dm644 pdf_annotate/ws_relay.py $(DATADIR)/classshare/pdf_annotate/ws_relay.py
+	install -Dm644 pdf_annotate/routes.py $(DATADIR)/classshare/pdf_annotate/routes.py
+	install -Dm644 pdf_annotate/viewer.html $(DATADIR)/classshare/pdf_annotate/viewer.html
 	install -Dm644 icons/classshare.svg \
 		$(DATADIR)/icons/hicolor/scalable/apps/gnome-classshare.svg
 	install -Dm644 data/gnome-classshare.desktop \
