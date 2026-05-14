@@ -162,10 +162,9 @@ class ClassShareWindow(Adw.ApplicationWindow):
         target_label.set_xalign(0)
         target_row.append(target_label)
 
-        self.target_combo = Gtk.ComboBoxText()
-        self.target_combo.append_text("Alle Online-Schüler")
-        self.target_combo.append_text("Alle Schüler")
-        self.target_combo.set_active(0)
+        self._target_model = Gtk.StringList.new(["Alle Online-Schüler", "Alle Schüler"])
+        self.target_combo = Gtk.DropDown.new(self._target_model, None)
+        self.target_combo.set_selected(0)
         target_row.append(self.target_combo)
         box.append(target_row)
 
@@ -263,32 +262,31 @@ class ClassShareWindow(Adw.ApplicationWindow):
         self._save_settings()
 
     def _choose_logo(self, *_):
-        dialog = Gtk.FileChooserNative.new(
-            "Logo auswählen",
-            self,
-            Gtk.FileChooserAction.OPEN,
-            "Auswählen",
-            "Abbrechen",
-        )
+        dialog = Gtk.FileDialog.new()
+        dialog.set_title("Logo auswählen")
         filter_img = Gtk.FileFilter()
         filter_img.set_name("Bilder (PNG, JPG, SVG)")
         filter_img.add_mime_type("image/png")
         filter_img.add_mime_type("image/jpeg")
         filter_img.add_mime_type("image/svg+xml")
-        dialog.add_filter(filter_img)
-        dialog.connect("response", self._on_logo_response)
-        dialog.show()
+        filter_store = Gio.ListStore.new(Gtk.FileFilter)
+        filter_store.append(filter_img)
+        dialog.set_filters(filter_store)
+        dialog.open(self, None, self._on_logo_response)
 
-    def _on_logo_response(self, dialog, response):
-        if response == Gtk.ResponseType.ACCEPT:
-            file = dialog.get_file()
+    def _on_logo_response(self, dialog, result):
+        try:
+            file = dialog.open_finish(result)
             if file:
                 path = file.get_path()
                 if path:
                     self.state.logo_path = path
                     self.logo_path_label.set_text(Path(path).name)
                     self._save_settings()
-        dialog.destroy()
+        except GLib.Error as exc:
+            if self._is_dismissed_dialog_error(exc):
+                return
+            logging.warning("Fehler beim Logo-Dialog: %s", exc)
 
     def _toggle_fullscreen(self, *_):
         self._is_fullscreen = not self._is_fullscreen
@@ -439,39 +437,23 @@ class ClassShareWindow(Adw.ApplicationWindow):
     def _remove_selected_file(self, _btn, file_path):
         self._set_selected_files([path for path in self.state.selected_files if path != file_path])
 
-    def _extract_paths_from_file_model(self, files_model):
-        paths = []
-        if files_model is None:
-            return paths
-        if hasattr(files_model, "get_n_items") and hasattr(files_model, "get_item"):
-            for index in range(files_model.get_n_items()):
-                file = files_model.get_item(index)
-                if isinstance(file, Gio.File):
-                    path = file.get_path()
-                    if path:
-                        paths.append(path)
-            return paths
-        return paths
-
     def _choose_file(self, *_):
-        dialog = Gtk.FileChooserNative.new(
-            "Datei auswählen",
-            self,
-            Gtk.FileChooserAction.OPEN,
-            "Auswählen",
-            "Abbrechen",
-        )
-        dialog.set_select_multiple(True)
-        dialog.connect("response", self._on_file_response)
-        dialog.show()
+        dialog = Gtk.FileDialog.new()
+        dialog.set_title("Datei auswählen")
+        dialog.open_multiple(self, None, self._on_file_response)
 
-    def _on_file_response(self, dialog, response):
-        if response == Gtk.ResponseType.ACCEPT:
-            paths = self._extract_paths_from_file_model(dialog.get_files())
-            if paths:
-                self._set_selected_files(paths)
-                self.toast_overlay.add_toast(Adw.Toast(title=f"📂 {len(paths)} Datei(en) ausgewählt"))
-        dialog.destroy()
+    def _on_file_response(self, dialog, result):
+        try:
+            files = dialog.open_multiple_finish(result)
+            if files:
+                paths = [files.get_item(i).get_path() for i in range(files.get_n_items()) if files.get_item(i).get_path()]
+                if paths:
+                    self._set_selected_files(paths)
+                    self.toast_overlay.add_toast(Adw.Toast(title=f"📂 {len(paths)} Datei(en) ausgewählt"))
+        except GLib.Error as exc:
+            if self._is_dismissed_dialog_error(exc):
+                return
+            logging.warning("Fehler beim Datei-Dialog: %s", exc)
 
     def _send_files_to_students(self, _btn):
         selected = list(self.state.selected_files)
@@ -479,7 +461,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
             self.toast_overlay.add_toast(Adw.Toast(title="Keine Datei ausgewählt"))
             return
 
-        target_text = self.target_combo.get_active_text() or "Alle Online-Schüler"
+        target_text = self._selected_target_text()
         with self.state.lock:
             all_students = self.state.student_names()
             if target_text == "Alle Online-Schüler":
@@ -541,19 +523,29 @@ class ClassShareWindow(Adw.ApplicationWindow):
         return False
 
     def _refresh_target_combo(self):
-        previous = self.target_combo.get_active_text() or "Alle Online-Schüler"
+        previous = self._selected_target_text()
         names = self.state.student_names()
-        self.target_combo.remove_all()
-        self.target_combo.append_text("Alle Online-Schüler")
-        self.target_combo.append_text("Alle Schüler")
-        for name in names:
-            self.target_combo.append_text(name)
-        index = 0
+        self._target_model = Gtk.StringList.new(["Alle Online-Schüler", "Alle Schüler"] + names)
+        self.target_combo.set_model(self._target_model)
         if previous == "Alle Schüler":
-            index = 1
+            self.target_combo.set_selected(1)
         elif previous in names:
-            index = names.index(previous) + 2
-        self.target_combo.set_active(index)
+            self.target_combo.set_selected(names.index(previous) + 2)
+        else:
+            self.target_combo.set_selected(0)
+
+    def _selected_target_text(self):
+        selected_index = self.target_combo.get_selected()
+        if selected_index == Gtk.INVALID_LIST_POSITION:
+            return "Alle Online-Schüler"
+        return self._target_model.get_string(selected_index) or "Alle Online-Schüler"
+
+    def _is_dismissed_dialog_error(self, exc):
+        dialog_error_quark = getattr(Gtk, "dialog_error_quark", None)
+        dialog_error = getattr(Gtk, "DialogError", None)
+        if dialog_error_quark is None or dialog_error is None:
+            return True
+        return exc.matches(dialog_error_quark(), dialog_error.DISMISSED)
 
     def _refresh_overview_rows(self):
         child = self.overview_list.get_first_child()
