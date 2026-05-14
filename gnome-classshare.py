@@ -7,7 +7,6 @@ import json
 import logging
 import shutil
 import subprocess
-import sys
 import threading
 from pathlib import Path
 from http.server import ThreadingHTTPServer
@@ -24,18 +23,11 @@ try:
 except ImportError:  # pragma: no cover
     qrcode = None
 
-from server import (
-    APP_DESKTOP_ID,
-    CONFIG_DIR,
-    SERVER_PORT,
-    SETTINGS_FILE,
-    ClassShareHandler,
-    ClassShareState,
-    safe_unique_path,
-    sanitize_filename,
-    strip_timestamp_prefix,
-    timestamp_prefix,
-)
+from constants import APP_DESKTOP_ID, CONFIG_DIR, SERVER_PORT, SETTINGS_FILE
+from desktop_integration import ensure_desktop_file, install_icon
+from handler import ClassShareHandler
+from state import ClassShareState
+from utils import safe_unique_path, sanitize_filename, strip_timestamp_prefix, timestamp_prefix
 
 
 class ClassShareWindow(Adw.ApplicationWindow):
@@ -747,8 +739,8 @@ class ClassShareApp(Adw.Application):
         except Exception as exc:
             logging.warning("Farbmodus konnte nicht auf Systemvorgabe gesetzt werden: %s", exc)
 
-        self._ensure_desktop_file()
-        self._install_icon()
+        ensure_desktop_file(APP_DESKTOP_ID)
+        install_icon()
 
         if self.win is None:
             self.win = ClassShareWindow(self)
@@ -802,48 +794,6 @@ class ClassShareApp(Adw.Application):
         if self.win is not None:
             return self.win.on_student_upload(student_name, filename, size)
         return False
-
-    def _install_icon(self):
-        try:
-            icon_src = Path(__file__).parent / "icons" / "classshare.svg"
-            if not icon_src.exists():
-                return
-            icon_dir = Path.home() / ".local" / "share" / "icons" / "hicolor" / "scalable" / "apps"
-            icon_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(icon_src, icon_dir / "gnome-classshare.svg")
-            try:
-                subprocess.Popen(
-                    ["gtk-update-icon-cache", "-f", "-t", str(Path.home() / ".local" / "share" / "icons" / "hicolor")],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            except FileNotFoundError as exc:
-                # Optionales Tool; fehlend ist unkritisch.
-                logging.debug("gtk-update-icon-cache nicht verfügbar: %s", exc)
-        except Exception as exc:
-            logging.warning("Icon konnte nicht installiert werden: %s", exc)
-
-    def _ensure_desktop_file(self):
-        try:
-            desktop_dir = Path.home() / ".local" / "share" / "applications"
-            desktop_dir.mkdir(parents=True, exist_ok=True)
-            desktop_path = desktop_dir / APP_DESKTOP_ID
-            if not desktop_path.exists():
-                exec_path = Path(sys.argv[0]).resolve()
-                desktop_path.write_text(
-                    "[Desktop Entry]\n"
-                    "Name=ClassShare\n"
-                    "Comment=Dateien teilen und einsammeln im Schulnetz\n"
-                    f"Exec={sys.executable} {exec_path}\n"
-                    "Icon=gnome-classshare\n"
-                    "Terminal=false\n"
-                    "Type=Application\n"
-                    "Categories=Education;Network;\n"
-                    "StartupWMClass=ClassShare\n"
-                )
-        except Exception as exc:
-            logging.warning("Desktop-Datei konnte nicht erstellt werden: %s", exc)
-
 
 def _parse_args():
     parser = argparse.ArgumentParser(description="ClassShare Tutor-App")
