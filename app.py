@@ -446,7 +446,12 @@ class ClassShareWindow(Adw.ApplicationWindow):
         try:
             files = dialog.open_multiple_finish(result)
             if files:
-                paths = [files.get_item(i).get_path() for i in range(files.get_n_items()) if files.get_item(i).get_path()]
+                paths = []
+                for index in range(files.get_n_items()):
+                    file = files.get_item(index)
+                    path = file.get_path() if file else None
+                    if path:
+                        paths.append(path)
                 if paths:
                     self._set_selected_files(paths)
                     self.toast_overlay.add_toast(Adw.Toast(title=f"📂 {len(paths)} Datei(en) ausgewählt"))
