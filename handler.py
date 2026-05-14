@@ -55,7 +55,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
     def _make_disposition(self, disposition_type: str, filename: str) -> str:
         """Build a Content-Disposition value with RFC 5987 filename* encoding."""
         encoded_name = quote(filename, safe="")
-        ascii_name = filename.encode("ascii", "ignore").decode("ascii")
+        ascii_name = "".join(c if ord(c) < 128 else "_" for c in filename)
         return f'{disposition_type}; filename="{ascii_name}"; filename*=UTF-8\'\'{encoded_name}'
 
     def _send_html(self, html: str, status=HTTPStatus.OK):
