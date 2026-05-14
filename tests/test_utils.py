@@ -26,7 +26,8 @@ def test_sanitize_student_name_valid():
 
 
 def test_sanitize_student_name_empty():
-    assert sanitize_student_name("") is None or sanitize_student_name("") == ""
+    result = sanitize_student_name("")
+    assert result is None or result == ""
 
 
 def test_sanitize_student_name_special_chars():

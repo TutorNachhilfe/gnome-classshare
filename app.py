@@ -38,8 +38,8 @@ class ClassShareApp(Adw.Application):
             logging.warning("Farbmodus konnte nicht auf Systemvorgabe gesetzt werden: %s", exc)
 
         # Nur beim direkten Start aus dem Quellverzeichnis, nicht bei systemweiter Installation
-        _INSTALLED_DATA_DIR = Path("/usr/share/classshare")
-        if not _INSTALLED_DATA_DIR.exists():
+        installed_data_dir = Path("/usr/share/classshare")
+        if not installed_data_dir.exists():
             ensure_desktop_file(APP_DESKTOP_ID)
             install_icon()
 
