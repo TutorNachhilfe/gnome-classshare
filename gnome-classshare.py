@@ -875,6 +875,7 @@ class ClassShareApp(Adw.Application):
             cert_path, key_path = tls
             try:
                 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                ctx.minimum_version = ssl.TLSVersion.TLSv1_2
                 ctx.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
                 self.server.socket = ctx.wrap_socket(self.server.socket, server_side=True)
                 self.use_https = True
