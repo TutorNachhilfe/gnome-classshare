@@ -1,0 +1,6 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+override_dh_auto_install:
+	make install DESTDIR=$(CURDIR)/debian/gnome-classshare PREFIX=/usr

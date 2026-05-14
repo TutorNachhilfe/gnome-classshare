@@ -1,0 +1,16 @@
+Source: gnome-classshare
+Section: education
+Priority: optional
+Maintainer: TutorNachhilfe <konto@tutor.schule>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.0
+Homepage: https://github.com/TutorNachhilfe/gnome-classshare
+
+Package: gnome-classshare
+Architecture: all
+Depends: ${misc:Depends}, python3, python3-gi, python3-gi-cairo,
+ gir1.2-gtk-4.0, gir1.2-adw-1, python3-pil
+Recommends: python3-qrcode
+Description: Dateien teilen und einsammeln im Schulnetz
+ GNOME-App für Tutoren zum Teilen und Einsammeln von Dateien
+ per QR-Code im lokalen Netzwerk.
