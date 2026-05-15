@@ -122,15 +122,16 @@
     const btnPen      = document.getElementById('btnPen');
     const btnEraser   = document.getElementById('btnEraser');
     const statusEl    = document.getElementById('status');
+    const pdfjsInstallHint = 'Installiere das PDF.js-Paket für dein System (z. B. sudo pacman -S pdfjs).';
 
     function setStatus(msg) { statusEl.textContent = msg; }
 
     if (typeof pdfjsLib === 'undefined') {
-      setStatus('❌ PDF.js konnte nicht geladen werden. Bitte "pdfjs" Paket installieren: sudo pacman -S pdfjs');
+      setStatus(`❌ PDF.js konnte nicht geladen werden. ${pdfjsInstallHint}`);
       document.getElementById('pages').innerHTML =
         '<div style="color:#fff;padding:2rem;text-align:center">' +
         '<h2>❌ PDF.js nicht verfügbar</h2>' +
-        '<p>Installiere das pdfjs-Paket: <code>sudo pacman -S pdfjs</code></p>' +
+        `<p>${pdfjsInstallHint.replace('sudo pacman -S pdfjs', '<code>sudo pacman -S pdfjs</code>')}</p>` +
         '<p>Oder stelle sicher, dass das Gerät Internetzugang hat.</p>' +
         '</div>';
     } else {

@@ -73,14 +73,14 @@ def test_viewer_uses_local_pdfjs_assets_and_error_message():
     content = viewer_path.read_text(encoding="utf-8")
 
     assert '<script src="/pdf-js/pdf.min.js"></script>' in content
+    assert "typeof pdfjsLib === 'undefined'" in content
+    assert "const pdfjsInstallHint =" in content
     assert "pdfjsLib.GlobalWorkerOptions.workerSrc =" in content
     assert "'/pdf-js/pdf.worker.min.js';" in content
-    assert "PDF.js nicht verfügbar" in content
 
 
 if __name__ == "__main__":
     import traceback
-    import sys
 
     tests = [v for k, v in globals().items() if k.startswith("test_")]
     passed = 0
