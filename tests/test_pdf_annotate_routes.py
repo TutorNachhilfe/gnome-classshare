@@ -60,6 +60,17 @@ def test_viewer_uses_local_pdfjs_assets_and_error_message():
     assert "'/pdf-js/pdf.worker.min.js';" in content
 
 
+def test_viewer_allows_touch_scroll_but_blocks_touch_drawing():
+    viewer_path = Path(__file__).resolve().parent.parent / "pdf_annotate" / "viewer.html"
+    content = viewer_path.read_text(encoding="utf-8")
+
+    assert "touch-action: pan-x pan-y pinch-zoom;" in content
+    assert "if (e.pointerType === 'touch') return;" in content
+    assert "annCanvas.addEventListener('pointerdown', e => {" in content
+    assert "annCanvas.addEventListener('pointermove', e => {" in content
+    assert "annCanvas.addEventListener('pointerup', e => {" in content
+
+
 def test_pdfjs_url_methods_return_fixed_paths():
     assert routes.AnnotationRoutes._pdfjs_main_url() == "/pdf-js/pdf.min.js"
     assert routes.AnnotationRoutes._pdfjs_worker_url() == "/pdf-js/pdf.worker.min.js"
