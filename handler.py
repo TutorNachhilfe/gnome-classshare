@@ -107,6 +107,22 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         if parsed.path == "/ws":
             self._handle_websocket()
             return
+        if parsed.path == "/annotate":
+            from pdf_annotate.routes import AnnotationRoutes
+            AnnotationRoutes.handle_pdf_viewer(self, parsed)
+            return
+        if parsed.path == "/pdf-file":
+            from pdf_annotate.routes import AnnotationRoutes
+            AnnotationRoutes.handle_pdf_file(self, parsed)
+            return
+        if parsed.path == "/api/annotations":
+            from pdf_annotate.routes import AnnotationRoutes
+            AnnotationRoutes.handle_annotations_get(self, parsed)
+            return
+        if parsed.path == "/ws/annotate":
+            from pdf_annotate.routes import AnnotationRoutes
+            AnnotationRoutes.handle_annotation_ws(self, parsed)
+            return
         self._send_html("<h1>Nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
 
     def do_POST(self):
@@ -116,6 +132,11 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             return
         if path == "/upload":
             self._handle_upload()
+            return
+        if path == "/api/annotations":
+            from pdf_annotate.routes import AnnotationRoutes
+            parsed_url = urlparse(self.path)
+            AnnotationRoutes.handle_annotations_post(self, parsed_url)
             return
         self._send_html("<h1>Nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
 

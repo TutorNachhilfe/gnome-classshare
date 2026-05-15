@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF Annotieren</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #666; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+
+    #toolbar {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      background: #1e1e1e;
+      color: #f0f0f0;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 6px 10px;
+      z-index: 100;
+      box-shadow: 0 2px 6px rgba(0,0,0,.4);
+    }
+    #toolbar label { font-size: 13px; display: flex; align-items: center; gap: 4px; }
+    #toolbar input[type=color] {
+      width: 36px; height: 28px;
+      border: none; cursor: pointer;
+      background: none; padding: 0;
+      border-radius: 4px;
+    }
+    #toolbar select {
+      padding: 4px 6px;
+      border-radius: 6px;
+      background: #333;
+      color: #f0f0f0;
+      border: 1px solid #555;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    #toolbar button {
+      padding: 5px 10px;
+      border: 2px solid transparent;
+      border-radius: 6px;
+      background: #333;
+      color: #f0f0f0;
+      cursor: pointer;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    #toolbar button:hover { background: #444; }
+    #toolbar button.active { border-color: #4da6ff; background: #1a3a5c; }
+    #status { margin-left: auto; font-size: 12px; opacity: .7; white-space: nowrap; }
+
+    #pages {
+      margin-top: 52px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 12px;
+      gap: 12px;
+    }
+    .page-wrap {
+      position: relative;
+      max-width: 900px;
+      width: 100%;
+      box-shadow: 0 2px 10px rgba(0,0,0,.5);
+      border-radius: 3px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .pdf-canvas {
+      display: block;
+      width: 100%;
+    }
+    .ann-canvas {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <label>🎨 <input type="color" id="colorPicker" value="#e11d48" title="Farbe"></label>
+    <label>📏
+      <select id="widthPicker" title="Stiftdicke">
+        <option value="2">2 px</option>
+        <option value="4" selected>4 px</option>
+        <option value="8">8 px</option>
+        <option value="16">16 px</option>
+      </select>
+    </label>
+    <button id="btnPen">✏️ Stift</button>
+    <button id="btnEraser">🧹 Radierer</button>
+    <button id="btnUndo">↩️ Rückgängig</button>
+    <button id="btnClear">🗑️ Alles löschen</button>
+    <span id="status"></span>
+  </div>
+  <div id="pages"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.js"></script>
+  <script>
+    'use strict';
+
+    const params = new URLSearchParams(location.search);
+    const pdfId  = params.get('pdf') || '';
+
+    // ── State ──────────────────────────────────────────────────────────────
+    let strokes = [];          // { color, width, points:[[x,y],...], pageIndex }
+    let currentStroke = null;
+    let tool = 'none';         // 'pen' | 'eraser' | 'none'
+    let wsConn = null;
+
+    // page entries: { pdfCanvas, annCanvas, ctx }
+    const pages = [];
+
+    // ── UI refs ────────────────────────────────────────────────────────────
+    const colorPicker = document.getElementById('colorPicker');
+    const widthPicker = document.getElementById('widthPicker');
+    const btnPen      = document.getElementById('btnPen');
+    const btnEraser   = document.getElementById('btnEraser');
+    const statusEl    = document.getElementById('status');
+
+    function setStatus(msg) { statusEl.textContent = msg; }
+
+    // ── Tool buttons ───────────────────────────────────────────────────────
+    btnPen.addEventListener('click', () => setTool(tool === 'pen' ? 'none' : 'pen'));
+    btnEraser.addEventListener('click', () => setTool(tool === 'eraser' ? 'none' : 'eraser'));
+
+    function setTool(t) {
+      tool = t;
+      btnPen.classList.toggle('active', tool === 'pen');
+      btnEraser.classList.toggle('active', tool === 'eraser');
+      pages.forEach(p => {
+        p.annCanvas.style.pointerEvents = (tool === 'pen' || tool === 'eraser') ? 'auto' : 'none';
+      });
+    }
+
+    document.getElementById('btnUndo').addEventListener('click', () => {
+      if (!strokes.length) return;
+      strokes.pop();
+      redrawAll();
+      saveAnnotations();
+      wsSend({ type: 'undo' });
+    });
+
+    document.getElementById('btnClear').addEventListener('click', () => {
+      if (!confirm('Alle Annotationen unwiderruflich löschen?')) return;
+      strokes = [];
+      redrawAll();
+      saveAnnotations();
+      wsSend({ type: 'clear' });
+    });
+
+    // ── Drawing ────────────────────────────────────────────────────────────
+    function attachPointer(annCanvas, pageIndex) {
+      let drawing = false;
+
+      annCanvas.addEventListener('pointerdown', e => {
+        if (tool === 'none') return;
+        drawing = true;
+        annCanvas.setPointerCapture(e.pointerId);
+        const pt = canvasPt(annCanvas, e);
+        if (tool === 'pen') {
+          currentStroke = {
+            color: colorPicker.value,
+            width: parseInt(widthPicker.value, 10),
+            points: [pt],
+            pageIndex,
+          };
+        } else {
+          eraseAt(pageIndex, pt);
+        }
+      });
+
+      annCanvas.addEventListener('pointermove', e => {
+        if (!drawing) return;
+        const pt = canvasPt(annCanvas, e);
+        if (tool === 'pen' && currentStroke) {
+          currentStroke.points.push(pt);
+          // incremental draw of last segment
+          const pg = pages[pageIndex];
+          const pts = currentStroke.points;
+          if (pts.length >= 2) {
+            pg.ctx.beginPath();
+            pg.ctx.strokeStyle = currentStroke.color;
+            pg.ctx.lineWidth   = currentStroke.width;
+            pg.ctx.lineCap     = 'round';
+            pg.ctx.lineJoin    = 'round';
+            pg.ctx.moveTo(pts[pts.length - 2][0], pts[pts.length - 2][1]);
+            pg.ctx.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
+            pg.ctx.stroke();
+          }
+        } else if (tool === 'eraser') {
+          eraseAt(pageIndex, pt);
+        }
+      });
+
+      annCanvas.addEventListener('pointerup', () => {
+        if (!drawing) return;
+        drawing = false;
+        if (tool === 'pen' && currentStroke && currentStroke.points.length >= 2) {
+          strokes.push(currentStroke);
+          wsSend({ type: 'stroke', stroke: currentStroke });
+          saveAnnotations();
+        } else if (tool === 'eraser') {
+          // broadcast current state so all clients stay in sync
+          wsSend({ type: 'sync', strokes });
+          saveAnnotations();
+        }
+        currentStroke = null;
+      });
+    }
+
+    function canvasPt(canvas, e) {
+      const r  = canvas.getBoundingClientRect();
+      const sx = canvas.width  / r.width;
+      const sy = canvas.height / r.height;
+      return [(e.clientX - r.left) * sx, (e.clientY - r.top) * sy];
+    }
+
+    function eraseAt(pageIndex, [ex, ey]) {
+      const R = 20; // eraser radius in canvas pixels
+      const before = strokes.length;
+      strokes = strokes.filter(s => {
+        if (s.pageIndex !== pageIndex) return true;
+        return !s.points.some(([px, py]) => {
+          const dx = px - ex, dy = py - ey;
+          return dx * dx + dy * dy < R * R;
+        });
+      });
+      if (strokes.length !== before) redrawPage(pageIndex);
+    }
+
+    function drawStroke(ctx, s) {
+      if (s.points.length < 2) return;
+      ctx.beginPath();
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth   = s.width;
+      ctx.lineCap     = 'round';
+      ctx.lineJoin    = 'round';
+      ctx.moveTo(s.points[0][0], s.points[0][1]);
+      for (let i = 1; i < s.points.length; i++) {
+        ctx.lineTo(s.points[i][0], s.points[i][1]);
+      }
+      ctx.stroke();
+    }
+
+    function redrawPage(pi) {
+      if (pi >= pages.length) return;
+      const { ctx, annCanvas } = pages[pi];
+      ctx.clearRect(0, 0, annCanvas.width, annCanvas.height);
+      strokes.filter(s => s.pageIndex === pi).forEach(s => drawStroke(ctx, s));
+    }
+
+    function redrawAll() {
+      pages.forEach((_, i) => redrawPage(i));
+    }
+
+    // ── WebSocket ──────────────────────────────────────────────────────────
+    function connectWS() {
+      if (!pdfId) return;
+      const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+      wsConn = new WebSocket(`${scheme}://${location.host}/ws/annotate?pdf=${encodeURIComponent(pdfId)}`);
+      wsConn.onopen  = () => setStatus('🟢 Verbunden');
+      wsConn.onclose = () => {
+        setStatus('🔴 Getrennt – reconnect…');
+        wsConn = null;
+        setTimeout(connectWS, 2000);
+      };
+      wsConn.onmessage = e => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'stroke' && msg.stroke) {
+            strokes.push(msg.stroke);
+            const pi = msg.stroke.pageIndex ?? 0;
+            if (pi < pages.length) drawStroke(pages[pi].ctx, msg.stroke);
+          } else if (msg.type === 'undo') {
+            strokes.pop();
+            redrawAll();
+          } else if (msg.type === 'clear') {
+            strokes = [];
+            redrawAll();
+          } else if (msg.type === 'sync' && Array.isArray(msg.strokes)) {
+            strokes = msg.strokes;
+            redrawAll();
+          }
+        } catch (_) {}
+      };
+    }
+
+    function wsSend(obj) {
+      if (wsConn && wsConn.readyState === WebSocket.OPEN) {
+        wsConn.send(JSON.stringify(obj));
+      }
+    }
+
+    // ── Persistence ────────────────────────────────────────────────────────
+    async function loadAnnotations() {
+      try {
+        const r = await fetch(`/api/annotations?pdf=${encodeURIComponent(pdfId)}`);
+        if (!r.ok) return;
+        const data = await r.json();
+        strokes = data.strokes || [];
+        redrawAll();
+      } catch (_) {}
+    }
+
+    async function saveAnnotations() {
+      if (!pdfId) return;
+      try {
+        await fetch(`/api/annotations?pdf=${encodeURIComponent(pdfId)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ strokes }),
+        });
+      } catch (_) {}
+    }
+
+    // ── PDF rendering ──────────────────────────────────────────────────────
+    async function loadPDF() {
+      if (!pdfId) {
+        setStatus('⚠️ Kein PDF angegeben');
+        return;
+      }
+
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.js';
+
+      setStatus('⏳ Lade PDF…');
+      try {
+        const pdf = await pdfjsLib.getDocument(
+          `/pdf-file?pdf=${encodeURIComponent(pdfId)}`
+        ).promise;
+
+        const container = document.getElementById('pages');
+        const maxW = Math.min(window.innerWidth - 24, 900);
+
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const pdfPage    = await pdf.getPage(i);
+          const viewport1  = pdfPage.getViewport({ scale: 1 });
+          const scale      = maxW / viewport1.width;
+          const viewport   = pdfPage.getViewport({ scale });
+
+          const wrap = document.createElement('div');
+          wrap.className = 'page-wrap';
+
+          const pdfCanvas = document.createElement('canvas');
+          pdfCanvas.className = 'pdf-canvas';
+          pdfCanvas.width  = Math.round(viewport.width);
+          pdfCanvas.height = Math.round(viewport.height);
+
+          const annCanvas = document.createElement('canvas');
+          annCanvas.className = 'ann-canvas';
+          annCanvas.width  = pdfCanvas.width;
+          annCanvas.height = pdfCanvas.height;
+          annCanvas.style.pointerEvents = 'none';
+
+          wrap.appendChild(pdfCanvas);
+          wrap.appendChild(annCanvas);
+          container.appendChild(wrap);
+
+          const ctx = annCanvas.getContext('2d');
+          const pageIndex = i - 1;
+          pages.push({ pdfCanvas, annCanvas, ctx });
+          attachPointer(annCanvas, pageIndex);
+
+          await pdfPage.render({
+            canvasContext: pdfCanvas.getContext('2d'),
+            viewport,
+          }).promise;
+        }
+
+        setStatus('✅ Bereit');
+        await loadAnnotations();
+        connectWS();
+      } catch (err) {
+        setStatus('❌ Fehler: ' + err.message);
+      }
+    }
+
+    loadPDF();
+  </script>
+</body>
+</html>

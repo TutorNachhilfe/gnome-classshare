@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import base64
 import json
 import logging
 import shutil
@@ -608,6 +609,14 @@ class ClassShareWindow(Adw.ApplicationWindow):
                     view_btn.connect("clicked", self._open_file, f["path"])
                     file_row.append(view_btn)
 
+                    if f["filename"].lower().endswith(".pdf") and self.state.server_port:
+                        pdf_id = base64.urlsafe_b64encode(f["path"].encode()).rstrip(b"=").decode()
+                        ann_url = f"http://localhost:{self.state.server_port}/annotate?pdf={pdf_id}"
+                        ann_btn = Gtk.Button(label="📝 Annotieren")
+                        ann_btn.add_css_class("flat")
+                        ann_btn.connect("clicked", self._open_url, ann_url)
+                        file_row.append(ann_btn)
+
                     dl_btn = Gtk.Button(label="Herunterladen")
                     dl_btn.add_css_class("flat")
                     dl_btn.connect("clicked", self._open_folder, f["folder"])
@@ -626,6 +635,13 @@ class ClassShareWindow(Adw.ApplicationWindow):
         except Exception as exc:
             logging.warning("Datei konnte nicht geöffnet werden (%s): %s", path, exc)
             self.toast_overlay.add_toast(Adw.Toast(title=f"Konnte Datei nicht öffnen: {Path(path).name}"))
+
+    def _open_url(self, _btn, url: str):
+        try:
+            subprocess.Popen(["xdg-open", url])
+        except Exception as exc:
+            logging.warning("URL konnte nicht geöffnet werden (%s): %s", url, exc)
+            self.toast_overlay.add_toast(Adw.Toast(title="Konnte URL nicht öffnen"))
 
     def _open_folder(self, _btn, folder: str):
         try:
