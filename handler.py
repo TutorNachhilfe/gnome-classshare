@@ -111,6 +111,14 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             from pdf_annotate.routes import AnnotationRoutes
             AnnotationRoutes.handle_pdf_viewer(self, parsed)
             return
+        if parsed.path == "/pdf-js/pdf.min.js":
+            from pdf_annotate.routes import AnnotationRoutes
+            AnnotationRoutes.handle_pdfjs_main(self, parsed)
+            return
+        if parsed.path == "/pdf-js/pdf.worker.min.js":
+            from pdf_annotate.routes import AnnotationRoutes
+            AnnotationRoutes.handle_pdfjs_worker(self, parsed)
+            return
         if parsed.path == "/pdf-file":
             from pdf_annotate.routes import AnnotationRoutes
             AnnotationRoutes.handle_pdf_file(self, parsed)

@@ -15,6 +15,7 @@ depends=(
 )
 optdepends=(
     'python-qrcode: QR-Code-Anzeige'
+    'pdfjs: PDF-Annotationsfunktion ohne Internetzugang'
 )
 makedepends=('git')
 source=("git+${url}.git")

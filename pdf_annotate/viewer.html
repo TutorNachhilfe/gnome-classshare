@@ -100,7 +100,7 @@
   </div>
   <div id="pages"></div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.js"></script>
+  <script src="/pdf-js/pdf.min.js"></script>
   <script>
     'use strict';
 
@@ -122,8 +122,19 @@
     const btnPen      = document.getElementById('btnPen');
     const btnEraser   = document.getElementById('btnEraser');
     const statusEl    = document.getElementById('status');
+    const pdfjsInstallHint = 'Installiere das PDF.js-Paket für dein System (z. B. sudo pacman -S pdfjs).';
 
     function setStatus(msg) { statusEl.textContent = msg; }
+
+    if (typeof pdfjsLib === 'undefined') {
+      setStatus(`❌ PDF.js konnte nicht geladen werden. ${pdfjsInstallHint}`);
+      document.getElementById('pages').innerHTML =
+        '<div style="color:#fff;padding:2rem;text-align:center">' +
+        '<h2>❌ PDF.js nicht verfügbar</h2>' +
+        `<p>${pdfjsInstallHint.replace('sudo pacman -S pdfjs', '<code>sudo pacman -S pdfjs</code>')}</p>` +
+        '<p>Oder stelle sicher, dass das Gerät Internetzugang hat.</p>' +
+        '</div>';
+    } else {
 
     // ── Tool buttons ───────────────────────────────────────────────────────
     btnPen.addEventListener('click', () => setTool(tool === 'pen' ? 'none' : 'pen'));
@@ -327,7 +338,7 @@
       }
 
       pdfjsLib.GlobalWorkerOptions.workerSrc =
-        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.js';
+        '/pdf-js/pdf.worker.min.js';
 
       setStatus('⏳ Lade PDF…');
       try {
@@ -382,6 +393,7 @@
     }
 
     loadPDF();
+    }
   </script>
 </body>
 </html>
