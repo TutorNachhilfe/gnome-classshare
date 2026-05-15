@@ -11,8 +11,29 @@ from state import _ws_recv_frame
 from pdf_annotate.storage import load_annotations, save_annotations
 from pdf_annotate.ws_relay import relay
 
+PDFJS_MAIN_PATHS = (
+    Path("/usr/share/webapps/pdfjs/build/pdf.mjs"),
+    Path("/usr/share/webapps/pdfjs/build/pdf.min.js"),
+    Path("/usr/share/javascript/pdfjs-dist/build/pdf.min.js"),
+)
+PDFJS_WORKER_PATHS = (
+    Path("/usr/share/webapps/pdfjs/build/pdf.worker.mjs"),
+    Path("/usr/share/webapps/pdfjs/build/pdf.worker.min.js"),
+    Path("/usr/share/javascript/pdfjs-dist/build/pdf.worker.min.js"),
+)
+
 
 class AnnotationRoutes:
+    @staticmethod
+    def _serve_pdfjs_asset(handler, local_paths: tuple[Path, ...], fallback_url: str):
+        """Serve a local PDF.js asset if available, otherwise redirect to the CDN."""
+        for path in local_paths:
+            if path.is_file():
+                handler._send_bytes(path.read_bytes(), "application/javascript; charset=utf-8")
+                return
+        handler.send_response(HTTPStatus.FOUND)
+        handler.send_header("Location", fallback_url)
+        handler.end_headers()
 
     @staticmethod
     def _decode_pdf_id(pdf_id: str) -> Path | None:
@@ -71,6 +92,24 @@ class AnnotationRoutes:
                 "<h1>Fehler: viewer.html nicht gefunden</h1>",
                 status=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
+
+    @staticmethod
+    def handle_pdfjs_main(handler, parsed_url):
+        """Serve pdf.min.js from the local system package when available."""
+        AnnotationRoutes._serve_pdfjs_asset(
+            handler,
+            PDFJS_MAIN_PATHS,
+            "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.js",
+        )
+
+    @staticmethod
+    def handle_pdfjs_worker(handler, parsed_url):
+        """Serve pdf.worker.min.js from the local system package when available."""
+        AnnotationRoutes._serve_pdfjs_asset(
+            handler,
+            PDFJS_WORKER_PATHS,
+            "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.js",
+        )
 
     @staticmethod
     def handle_pdf_file(handler, parsed_url):
