@@ -100,14 +100,15 @@
   </div>
   <div id="pages"></div>
 
-  <script src="/pdf-js/pdf.min.js"></script>
+  <!-- __PDFJS_MAIN_URL__ is replaced at request time by routes.py -->
+  <script src="__PDFJS_MAIN_URL__"></script>
   <script>
     'use strict';
 
     const params = new URLSearchParams(location.search);
     const pdfId  = params.get('pdf') || '';
 
-    // ── State ──────────────────────────────────────────────────────────────
+    // ── State ───────────────────────────────────────────────────────────────
     let strokes = [];          // { color, width, points:[[x,y],...], pageIndex }
     let currentStroke = null;
     let tool = 'none';         // 'pen' | 'eraser' | 'none'
@@ -116,27 +117,25 @@
     // page entries: { pdfCanvas, annCanvas, ctx }
     const pages = [];
 
-    // ── UI refs ────────────────────────────────────────────────────────────
+    // ── UI refs ──────────────────────────────────────────────────────────────
     const colorPicker = document.getElementById('colorPicker');
     const widthPicker = document.getElementById('widthPicker');
     const btnPen      = document.getElementById('btnPen');
     const btnEraser   = document.getElementById('btnEraser');
     const statusEl    = document.getElementById('status');
-    const pdfjsInstallHint = 'Installiere das PDF.js-Paket für dein System (z. B. sudo pacman -S pdfjs).';
 
     function setStatus(msg) { statusEl.textContent = msg; }
 
     if (typeof pdfjsLib === 'undefined') {
-      setStatus(`❌ PDF.js konnte nicht geladen werden. ${pdfjsInstallHint}`);
+      setStatus('❌ PDF.js konnte nicht geladen werden');
       document.getElementById('pages').innerHTML =
         '<div style="color:#fff;padding:2rem;text-align:center">' +
         '<h2>❌ PDF.js nicht verfügbar</h2>' +
-        `<p>${pdfjsInstallHint.replace('sudo pacman -S pdfjs', '<code>sudo pacman -S pdfjs</code>')}</p>` +
-        '<p>Oder stelle sicher, dass das Gerät Internetzugang hat.</p>' +
+        '<p>Installiere das PDF.js-Paket: <code>sudo pacman -S pdfjs</code></p>' +
         '</div>';
     } else {
 
-    // ── Tool buttons ───────────────────────────────────────────────────────
+    // ── Tool buttons ────────────────────────────────────────────────────────
     btnPen.addEventListener('click', () => setTool(tool === 'pen' ? 'none' : 'pen'));
     btnEraser.addEventListener('click', () => setTool(tool === 'eraser' ? 'none' : 'eraser'));
 
@@ -165,7 +164,7 @@
       wsSend({ type: 'clear' });
     });
 
-    // ── Drawing ────────────────────────────────────────────────────────────
+    // ── Drawing ──────────────────────────────────────────────────────────────
     function attachPointer(annCanvas, pageIndex) {
       let drawing = false;
 
@@ -191,7 +190,6 @@
         const pt = canvasPt(annCanvas, e);
         if (tool === 'pen' && currentStroke) {
           currentStroke.points.push(pt);
-          // incremental draw of last segment
           const pg = pages[pageIndex];
           const pts = currentStroke.points;
           if (pts.length >= 2) {
@@ -217,7 +215,6 @@
           wsSend({ type: 'stroke', stroke: currentStroke });
           saveAnnotations();
         } else if (tool === 'eraser') {
-          // broadcast current state so all clients stay in sync
           wsSend({ type: 'sync', strokes });
           saveAnnotations();
         }
@@ -233,7 +230,7 @@
     }
 
     function eraseAt(pageIndex, [ex, ey]) {
-      const R = 20; // eraser radius in canvas pixels
+      const R = 20;
       const before = strokes.length;
       strokes = strokes.filter(s => {
         if (s.pageIndex !== pageIndex) return true;
@@ -270,7 +267,7 @@
       pages.forEach((_, i) => redrawPage(i));
     }
 
-    // ── WebSocket ──────────────────────────────────────────────────────────
+    // ── WebSocket ────────────────────────────────────────────────────────────
     function connectWS() {
       if (!pdfId) return;
       const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -308,7 +305,7 @@
       }
     }
 
-    // ── Persistence ────────────────────────────────────────────────────────
+    // ── Persistence ──────────────────────────────────────────────────────────
     async function loadAnnotations() {
       try {
         const r = await fetch(`/api/annotations?pdf=${encodeURIComponent(pdfId)}`);
@@ -330,15 +327,15 @@
       } catch (_) {}
     }
 
-    // ── PDF rendering ──────────────────────────────────────────────────────
+    // ── PDF rendering ─────────────────────────────────────────────────────────
     async function loadPDF() {
       if (!pdfId) {
         setStatus('⚠️ Kein PDF angegeben');
         return;
       }
 
-      pdfjsLib.GlobalWorkerOptions.workerSrc =
-        '/pdf-js/pdf.worker.min.js';
+      // __PDFJS_WORKER_URL__ is replaced at request time by routes.py
+      pdfjsLib.GlobalWorkerOptions.workerSrc = '__PDFJS_WORKER_URL__';
 
       setStatus('⏳ Lade PDF…');
       try {
