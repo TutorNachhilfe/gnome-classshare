@@ -100,8 +100,7 @@
   </div>
   <div id="pages"></div>
 
-  <!-- __PDFJS_MAIN_URL__ is replaced at request time by routes.py -->
-  <script src="__PDFJS_MAIN_URL__"></script>
+  <script src="/pdf-js/pdf.min.js"></script>
   <script>
     'use strict';
 
@@ -334,8 +333,7 @@
         return;
       }
 
-      // __PDFJS_WORKER_URL__ is replaced at request time by routes.py
-      pdfjsLib.GlobalWorkerOptions.workerSrc = '__PDFJS_WORKER_URL__';
+      pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf-js/pdf.worker.min.js';
 
       setStatus('⏳ Lade PDF…');
       try {
