@@ -11,29 +11,63 @@ from state import _ws_recv_frame
 from pdf_annotate.storage import load_annotations, save_annotations
 from pdf_annotate.ws_relay import relay
 
+# Arch Linux pdfjs package installs .mjs (ES modules) under /usr/share/pdf.js/
+# Other distros may use .min.js under different paths.
 PDFJS_MAIN_PATHS = (
+    Path("/usr/share/pdf.js/build/pdf.mjs"),                          # Arch: pdfjs
+    Path("/usr/share/pdf.js/build/pdf.min.js"),                       # Arch: pdfjs (older)
     Path("/usr/share/webapps/pdfjs/build/pdf.mjs"),
     Path("/usr/share/webapps/pdfjs/build/pdf.min.js"),
     Path("/usr/share/javascript/pdfjs-dist/build/pdf.min.js"),
 )
 PDFJS_WORKER_PATHS = (
+    Path("/usr/share/pdf.js/build/pdf.worker.mjs"),                   # Arch: pdfjs
+    Path("/usr/share/pdf.js/build/pdf.worker.min.js"),                # Arch: pdfjs (older)
     Path("/usr/share/webapps/pdfjs/build/pdf.worker.mjs"),
     Path("/usr/share/webapps/pdfjs/build/pdf.worker.min.js"),
     Path("/usr/share/javascript/pdfjs-dist/build/pdf.worker.min.js"),
 )
 
+# CDN fallback URLs (used when no local package is found)
+_CDN_MAIN   = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.js"
+_CDN_WORKER = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.js"
+
+
+def _find_pdfjs_path(paths: tuple) -> Path | None:
+    """Return the first existing path from the list, or None."""
+    for p in paths:
+        if p.is_file():
+            return p
+    return None
+
 
 class AnnotationRoutes:
     @staticmethod
-    def _serve_pdfjs_asset(handler, local_paths: tuple[Path, ...], fallback_url: str):
+    def _serve_pdfjs_asset(handler, local_paths: tuple, fallback_url: str):
         """Serve a local PDF.js asset if available, otherwise redirect to the CDN."""
-        for path in local_paths:
-            if path.is_file():
-                handler._send_bytes(path.read_bytes(), "application/javascript; charset=utf-8")
-                return
+        found = _find_pdfjs_path(local_paths)
+        if found:
+            handler._send_bytes(found.read_bytes(), "application/javascript; charset=utf-8")
+            return
         handler.send_response(HTTPStatus.FOUND)
         handler.send_header("Location", fallback_url)
         handler.end_headers()
+
+    @staticmethod
+    def _pdfjs_main_url() -> str:
+        """Return the URL the browser should use to load pdf.js."""
+        found = _find_pdfjs_path(PDFJS_MAIN_PATHS)
+        if found:
+            return "/pdf-js/pdf.mjs" if found.suffix == ".mjs" else "/pdf-js/pdf.min.js"
+        return _CDN_MAIN
+
+    @staticmethod
+    def _pdfjs_worker_url() -> str:
+        """Return the URL the browser should use to load pdf.worker.js."""
+        found = _find_pdfjs_path(PDFJS_WORKER_PATHS)
+        if found:
+            return "/pdf-js/pdf.worker.mjs" if found.suffix == ".mjs" else "/pdf-js/pdf.worker.min.js"
+        return _CDN_WORKER
 
     @staticmethod
     def _decode_pdf_id(pdf_id: str) -> Path | None:
@@ -45,7 +79,6 @@ class AnnotationRoutes:
             return None
 
         if "?" in decoded:
-            # Encoded as a download URL: /download?name=...&scope=...&file=...
             parsed = urlparse(decoded)
             params = parse_qs(parsed.query)
             student_name = params.get("name", [""])[0]
@@ -53,14 +86,11 @@ class AnnotationRoutes:
             stored_name = params.get("file", [""])[0]
             if not student_name or not stored_name:
                 return None
-            # Scope must be exactly one of the two known values
             if scope not in ("received", "sent"):
                 return None
-            # Prevent directory traversal: components must be plain names with no separators
             for component in (student_name, stored_name):
                 if not component or "\x00" in component or "/" in component or "\\" in component:
                     return None
-            # Ensure stored_name has no path components at all
             if Path(stored_name).name != stored_name:
                 return None
             if scope == "received":
@@ -68,10 +98,8 @@ class AnnotationRoutes:
             else:
                 pdf_path = CLASSSHARE_ROOT / student_name / "gesendet" / stored_name
         else:
-            # Encoded as an absolute filesystem path
             pdf_path = Path(decoded)
 
-        # Security: resolved path must be inside CLASSSHARE_ROOT
         try:
             pdf_path.resolve().relative_to(CLASSSHARE_ROOT.resolve())
         except ValueError:
@@ -81,11 +109,14 @@ class AnnotationRoutes:
 
     @staticmethod
     def handle_pdf_viewer(handler, parsed_url):
-        """Serve viewer.html for the annotation UI."""
+        """Serve viewer.html with correct pdf.js URLs injected."""
         viewer_path = Path(__file__).parent / "viewer.html"
         try:
-            content = viewer_path.read_bytes()
-            handler._send_bytes(content, "text/html; charset=utf-8")
+            content = viewer_path.read_text(encoding="utf-8")
+            # Inject the correct local-or-CDN URLs so the browser can load pdf.js
+            content = content.replace("__PDFJS_MAIN_URL__", AnnotationRoutes._pdfjs_main_url())
+            content = content.replace("__PDFJS_WORKER_URL__", AnnotationRoutes._pdfjs_worker_url())
+            handler._send_bytes(content.encode("utf-8"), "text/html; charset=utf-8")
         except OSError as exc:
             logging.error("viewer.html konnte nicht geladen werden: %s", exc)
             handler._send_html(
@@ -95,21 +126,13 @@ class AnnotationRoutes:
 
     @staticmethod
     def handle_pdfjs_main(handler, parsed_url):
-        """Serve pdf.min.js from the local system package when available."""
-        AnnotationRoutes._serve_pdfjs_asset(
-            handler,
-            PDFJS_MAIN_PATHS,
-            "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.js",
-        )
+        """Serve pdf.mjs / pdf.min.js from the local system package when available."""
+        AnnotationRoutes._serve_pdfjs_asset(handler, PDFJS_MAIN_PATHS, _CDN_MAIN)
 
     @staticmethod
     def handle_pdfjs_worker(handler, parsed_url):
-        """Serve pdf.worker.min.js from the local system package when available."""
-        AnnotationRoutes._serve_pdfjs_asset(
-            handler,
-            PDFJS_WORKER_PATHS,
-            "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.js",
-        )
+        """Serve pdf.worker.mjs / pdf.worker.min.js from the local system package."""
+        AnnotationRoutes._serve_pdfjs_asset(handler, PDFJS_WORKER_PATHS, _CDN_WORKER)
 
     @staticmethod
     def handle_pdf_file(handler, parsed_url):
