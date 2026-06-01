@@ -80,7 +80,7 @@ class ClassShareState:
         self.base_dir: Path = CLASSSHARE_ROOT
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-        self.ws_connections: dict[str, set] = {}
+        self.ws_connections: dict[str, set[socket.socket]] = {}
         self.last_active: dict[str, str] = {}
         self.selected_files: list[str] = []
         self.lock: threading.RLock = threading.RLock()

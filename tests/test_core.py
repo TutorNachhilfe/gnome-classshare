@@ -27,8 +27,7 @@ class TestSanitizeFilename:
         assert sanitize_filename("mein dokument.pdf") == "mein dokument.pdf"
 
     def test_valid_umlauts(self):
-        result = sanitize_filename("Übung.pdf")
-        assert "bung.pdf" in result  # Ü may be replaced but rest preserved
+        assert sanitize_filename("Übung.pdf") == "Übung.pdf"
 
     def test_path_traversal_dotdot(self):
         result = sanitize_filename("../secret.txt")
