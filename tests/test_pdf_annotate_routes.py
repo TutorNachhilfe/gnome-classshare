@@ -71,6 +71,31 @@ def test_viewer_allows_touch_scroll_but_blocks_touch_drawing():
     assert "annCanvas.addEventListener('pointerup', e => {" in content
 
 
+def test_viewer_pen_button_cycles_and_starts_enabled():
+    viewer_path = Path(__file__).resolve().parent.parent / "pdf_annotate" / "viewer.html"
+    content = viewer_path.read_text(encoding="utf-8")
+
+    assert "if (tool === 'none') setTool('pen');" in content
+    assert "else if (tool === 'pen') setTool('eraser');" in content
+    assert "else setTool('none');" in content
+    assert "btnPen.textContent = '✏️ Stift ✓';" in content
+    assert "btnPen.textContent = '🧹 Radierer';" in content
+    assert "setTool('pen');" in content
+
+
+def test_viewer_uses_light_theme_with_darkmode_override():
+    viewer_path = Path(__file__).resolve().parent.parent / "pdf_annotate" / "viewer.html"
+    content = viewer_path.read_text(encoding="utf-8")
+
+    assert "body { background: #e0e0e0;" in content
+    assert "#toolbar {" in content
+    assert "background: #f5f5f5;" in content
+    assert "color: #1a1a1a;" in content
+    assert "@media (prefers-color-scheme: dark)" in content
+    assert "body { background: #666; }" in content
+    assert "background: #1e1e1e;" in content
+
+
 def test_pdfjs_url_methods_return_fixed_paths():
     assert routes.AnnotationRoutes._pdfjs_main_url() == "/pdf-js/pdf.min.js"
     assert routes.AnnotationRoutes._pdfjs_worker_url() == "/pdf-js/pdf.worker.min.js"
