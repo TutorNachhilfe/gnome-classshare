@@ -4,14 +4,30 @@ GNOME-App zum Teilen und Einsammeln von Dateien per QR-Code im lokalen Netzwerk.
 
 ## Installation
 
-### Arch Linux (AUR)
+```bash
+git clone https://github.com/TutorNachhilfe/gnome-classshare.git
+cd gnome-classshare
+bash install.sh
+```
+
+Das Skript installiert alle Abhängigkeiten, richtet mDNS ein und erstellt einen Startmenüeintrag.
+Unterstützte Distributionen: **Arch/Manjaro**, **Debian/Ubuntu**, **Fedora**, **openSUSE**.
+
+### Manuelle Installation (paketbasiert)
+
+<details>
+<summary>Arch Linux (AUR)</summary>
+
 ```bash
 git clone https://github.com/TutorNachhilfe/gnome-classshare.git
 cd gnome-classshare
 makepkg -si
 ```
+</details>
 
-### Debian / Ubuntu
+<details>
+<summary>Debian / Ubuntu</summary>
+
 ```bash
 sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 python3-pil
 pip install qrcode
@@ -19,8 +35,11 @@ git clone https://github.com/TutorNachhilfe/gnome-classshare.git
 cd gnome-classshare
 sudo make install
 ```
+</details>
 
-### Fedora
+<details>
+<summary>Fedora</summary>
+
 ```bash
 sudo dnf install python3-gobject gtk4 libadwaita python3-pillow
 pip install qrcode
@@ -28,6 +47,7 @@ git clone https://github.com/TutorNachhilfe/gnome-classshare.git
 cd gnome-classshare
 sudo make install
 ```
+</details>
 
 ### Direkt starten (ohne Installation)
 ```bash
@@ -116,3 +136,5 @@ python3 app.py --port 9090
 | `gnome-classshare.spec` | RPM-Paketdefinition für Fedora/RHEL/openSUSE |
 | `data/gnome-classshare.desktop` | Desktop-Eintrag für Anwendungsmenü |
 | `data/classshare.sh` | Startskript für `/usr/bin/classshare` |
+| `install.sh` | Installations-Skript für Arch, Debian/Ubuntu, Fedora, openSUSE |
+| `assets/create_icon.py` | Erzeugt ein Platzhalter-PNG-Icon mit Pillow |
