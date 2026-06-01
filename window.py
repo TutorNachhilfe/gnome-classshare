@@ -5,10 +5,11 @@ import logging
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 from gi.repository import Adw, Gdk, GLib, Gio, Gtk, Pango
 
-from constants import CONFIG_DIR, SETTINGS_FILE
+from constants import CONFIG_DIR, CUSTOM_ICON_DIR, CUSTOM_ICON_PATH, MDNS_HOSTNAME, SETTINGS_FILE
 from qr_utils import make_qr_texture
 from utils import encode_pdf_id, safe_unique_path, sanitize_filename, strip_timestamp_prefix, timestamp_prefix
 
@@ -268,8 +269,15 @@ class ClassShareWindow(Adw.ApplicationWindow):
             if file:
                 path = file.get_path()
                 if path:
-                    self.state.logo_path = path
-                    self.logo_path_label.set_text(Path(path).name)
+                    try:
+                        CUSTOM_ICON_DIR.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(path, CUSTOM_ICON_PATH)
+                        persistent_path = str(CUSTOM_ICON_PATH)
+                    except Exception as exc:
+                        logging.warning("Icon konnte nicht in persistenten Pfad kopiert werden: %s", exc)
+                        persistent_path = path
+                    self.state.logo_path = persistent_path
+                    self.logo_path_label.set_text(Path(persistent_path).name)
                     self._save_settings()
         except GLib.Error as exc:
             if self._is_dismissed_dialog_error(exc):
@@ -490,8 +498,8 @@ class ClassShareWindow(Adw.ApplicationWindow):
         self.refresh_from_state()
         self.toast_overlay.add_toast(Adw.Toast(title=f"📤 {copied_files} Datei(en) gesendet"))
 
-    def _url_for_students(self):
-        return f"http://{self.state.server_ip}:{self.state.server_port}/"
+    def _url_for_students(self) -> str:
+        return f"http://{MDNS_HOSTNAME}:{self.state.server_port}/"
 
     def _set_qr(self, picture, url):
         texture = make_qr_texture(url)
@@ -506,7 +514,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
         self.qr_picture.set_paintable(None)
         self.ip_label.set_text("")
 
-    def set_server_error(self, message: str | None):
+    def set_server_error(self, message: Optional[str]) -> None:
         self.server_error_label.set_text(message or "")
         self.server_error_revealer.set_reveal_child(bool(message))
 
@@ -674,13 +682,21 @@ class ClassShareWindow(Adw.ApplicationWindow):
                 self.state.app_name = app_name
                 self.app_name_entry.set_text(app_name)
                 self.set_title(app_name)
-                logo_path = data.get("logo_path")
+                # Prefer persistent custom icon; fall back to settings-stored path
+                if CUSTOM_ICON_PATH.is_file():
+                    logo_path = str(CUSTOM_ICON_PATH)
+                else:
+                    logo_path = data.get("logo_path")
                 if logo_path and Path(logo_path).is_file():
                     self.state.logo_path = logo_path
                     self.logo_path_label.set_text(Path(logo_path).name)
                 return
         except Exception as exc:
             logging.warning("Einstellungen konnten nicht geladen werden: %s", exc)
+        # No settings file: still check for a persistent custom icon
+        if CUSTOM_ICON_PATH.is_file():
+            self.state.logo_path = str(CUSTOM_ICON_PATH)
+            self.logo_path_label.set_text(CUSTOM_ICON_PATH.name)
         self.set_default_size(900, 740)
 
     def _save_settings(self):

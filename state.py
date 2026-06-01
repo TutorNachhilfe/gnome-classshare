@@ -1,13 +1,18 @@
 import json
+import logging
+import socket
 import threading
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 from urllib.parse import quote
 
 from constants import CLASSSHARE_ROOT
 from utils import encode_pdf_id, format_size, get_local_ip, parse_timestamp_prefix, strip_timestamp_prefix
 
-def _ws_send_text(sock, text: str) -> bool:
+logger = logging.getLogger(__name__)
+
+def _ws_send_text(sock: socket.socket, text: str) -> bool:
     payload = text.encode("utf-8")
     frame = bytearray([0x81])
     size = len(payload)
@@ -27,11 +32,11 @@ def _ws_send_text(sock, text: str) -> bool:
         return False
 
 
-def _ws_send_json(sock, payload: dict) -> bool:
+def _ws_send_json(sock: socket.socket, payload: dict) -> bool:
     return _ws_send_text(sock, json.dumps(payload, ensure_ascii=False))
 
 
-def _ws_recv_frame(sock):
+def _ws_recv_frame(sock: socket.socket) -> tuple[Optional[int], bytes]:
     head = sock.recv(2)
     if len(head) < 2:
         return None, b""
@@ -69,29 +74,29 @@ def _ws_recv_frame(sock):
     return opcode, payload
 
 class ClassShareState:
-    def __init__(self):
-        self.server_port = None
-        self.server_ip = get_local_ip()
-        self.base_dir = CLASSSHARE_ROOT
+    def __init__(self) -> None:
+        self.server_port: Optional[int] = None
+        self.server_ip: str = get_local_ip()
+        self.base_dir: Path = CLASSSHARE_ROOT
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-        self.ws_connections = {}
-        self.last_active = {}
-        self.selected_files = []
-        self.lock = threading.RLock()
-        self.app_name = "ClassShare"
-        self.logo_path = None
+        self.ws_connections: dict[str, set] = {}
+        self.last_active: dict[str, str] = {}
+        self.selected_files: list[str] = []
+        self.lock: threading.RLock = threading.RLock()
+        self.app_name: str = "ClassShare"
+        self.logo_path: Optional[str] = None
 
-    def student_names(self):
+    def student_names(self) -> list[str]:
         names = [p.name for p in self.base_dir.iterdir() if p.is_dir()]
         names.sort(key=lambda name: name.casefold())
         return names
 
-    def resolve_name(self, name: str) -> str | None:
+    def resolve_name(self, name: str) -> Optional[str]:
         lookup = {existing.casefold(): existing for existing in self.student_names()}
         return lookup.get(name.casefold())
 
-    def ensure_student_dirs(self, name: str):
+    def ensure_student_dirs(self, name: str) -> tuple[Path, Path, Path]:
         student_dir = self.base_dir / name
         received_dir = student_dir / "empfangen"
         sent_dir = student_dir / "gesendet"
@@ -99,14 +104,14 @@ class ClassShareState:
         sent_dir.mkdir(parents=True, exist_ok=True)
         return student_dir, received_dir, sent_dir
 
-    def student_paths(self, name: str):
+    def student_paths(self, name: str) -> tuple[Path, Path, Path]:
         student_dir = self.base_dir / name
         return student_dir, student_dir / "empfangen", student_dir / "gesendet"
 
-    def touch_active(self, name: str):
+    def touch_active(self, name: str) -> None:
         self.last_active[name] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    def file_list_payload(self, student_name: str):
+    def file_list_payload(self, student_name: str) -> dict:
         _, received_dir, sent_dir = self.student_paths(student_name)
 
         def read_dir(path: Path, scope: str):
@@ -141,14 +146,14 @@ class ClassShareState:
             "sent": read_dir(sent_dir, "sent"),
         }
 
-    def tutor_overview_rows(self):
-        rows = []
+    def tutor_overview_rows(self) -> list[dict]:
+        rows: list[dict] = []
         names = self.student_names()
         for name in names:
             _, received_dir, sent_dir = self.student_paths(name)
 
-            def build_file_list(path: Path, scope: str):
-                files_list = []
+            def build_file_list(path: Path, scope: str) -> list[dict]:
+                files_list: list[dict] = []
                 if not path.exists():
                     return files_list
                 sorted_files = sorted([p for p in path.glob("*") if p.is_file()], key=lambda f: f.stat().st_mtime, reverse=True)
@@ -183,30 +188,32 @@ class ClassShareState:
             )
         return rows
 
-    def sockets_for_name(self, student_name: str):
+    def sockets_for_name(self, student_name: str) -> list:
         sockets = self.ws_connections.get(student_name, set())
         return list(sockets)
 
-    def add_socket(self, student_name: str, sock):
+    def add_socket(self, student_name: str, sock: socket.socket) -> None:
         if student_name not in self.ws_connections:
             self.ws_connections[student_name] = set()
         self.ws_connections[student_name].add(sock)
+        logger.debug("WebSocket-Verbindung hinzugefügt für %s", student_name)
 
-    def remove_socket(self, student_name: str, sock):
+    def remove_socket(self, student_name: str, sock: socket.socket) -> None:
         sockets = self.ws_connections.get(student_name)
         if not sockets:
             return
         sockets.discard(sock)
         if not sockets:
             self.ws_connections.pop(student_name, None)
+        logger.debug("WebSocket-Verbindung entfernt für %s", student_name)
 
-    def push_file_list(self, student_name: str):
+    def push_file_list(self, student_name: str) -> None:
         payload = self.file_list_payload(student_name)
         for sock in list(self.sockets_for_name(student_name)):
             if not _ws_send_json(sock, payload):
                 self.remove_socket(student_name, sock)
 
-    def push_new_file(self, student_name: str, filename: str, size: int):
+    def push_new_file(self, student_name: str, filename: str, size: int) -> None:
         payload = {
             "type": "new_file",
             "filename": filename,

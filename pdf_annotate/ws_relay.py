@@ -1,4 +1,7 @@
+import logging
 import threading
+
+logger = logging.getLogger(__name__)
 
 
 class AnnotationRelay:
@@ -14,6 +17,7 @@ class AnnotationRelay:
             if pdf_id not in self.sessions:
                 self.sessions[pdf_id] = set()
             self.sessions[pdf_id].add(conn)
+        logger.debug("Annotation-Session beigetreten: %s", pdf_id)
 
     def leave(self, pdf_id: str, conn):
         """Remove a WebSocket connection from a PDF session."""
@@ -22,6 +26,7 @@ class AnnotationRelay:
                 self.sessions[pdf_id].discard(conn)
                 if not self.sessions[pdf_id]:
                     del self.sessions[pdf_id]
+        logger.debug("Annotation-Session verlassen: %s", pdf_id)
 
     def broadcast(self, pdf_id: str, message: bytes, exclude=None):
         """Send a raw text message to all connections in the room except the sender."""
@@ -29,7 +34,8 @@ class AnnotationRelay:
 
         try:
             text = message.decode("utf-8")
-        except Exception:
+        except Exception as exc:
+            logger.warning("Broadcast-Nachricht konnte nicht dekodiert werden: %s", exc)
             return
 
         with self.lock:
@@ -40,8 +46,8 @@ class AnnotationRelay:
                 continue
             try:
                 _ws_send_text(conn, text)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Broadcast an Verbindung fehlgeschlagen: %s", exc)
 
 
 relay = AnnotationRelay()

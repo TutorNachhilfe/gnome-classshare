@@ -9,7 +9,8 @@ from html import escape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from typing import Callable, Optional
+from urllib.parse import ParseResult, parse_qs, quote, urlparse
 
 from constants import CONTENT_TOO_LARGE, MAX_UPLOAD_SIZE_BYTES, WS_TIMEOUT_SECONDS
 from state import _ws_recv_frame, _ws_send_json
@@ -23,12 +24,12 @@ from utils import (
 
 class ClassShareHandler(BaseHTTPRequestHandler):
     state = None
-    on_state_change = None
-    on_student_upload = None
-    max_upload_size = MAX_UPLOAD_SIZE_BYTES
-    _student_html_template: str | None = None
+    on_state_change: Optional[Callable[[], None]] = None
+    on_student_upload: Optional[Callable[[str, str, int], None]] = None
+    max_upload_size: int = MAX_UPLOAD_SIZE_BYTES
+    _student_html_template: Optional[str] = None
 
-    def log_message(self, fmt, *args):
+    def log_message(self, fmt: str, *args) -> None:
         return
 
     def _safe_header_value(self, value: str) -> str:
@@ -38,10 +39,10 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         self,
         content: bytes,
         content_type: str,
-        status=HTTPStatus.OK,
+        status: HTTPStatus = HTTPStatus.OK,
         *,
-        content_disposition: str | None = None,
-    ):
+        content_disposition: Optional[str] = None,
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", self._safe_header_value(content_type))
         if content_disposition:
@@ -53,10 +54,10 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
-    def _send_html(self, html: str, status=HTTPStatus.OK):
+    def _send_html(self, html: str, status: HTTPStatus = HTTPStatus.OK) -> None:
         self._send_bytes(html.encode("utf-8"), "text/html; charset=utf-8", status=status)
 
-    def _send_json(self, payload: dict, status=HTTPStatus.OK):
+    def _send_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self._send_bytes(data, "application/json; charset=utf-8", status=status)
 
@@ -77,7 +78,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         if cb:
             cb(student_name, filename, size)
 
-    def _name_from_query(self, query_string: str) -> str | None:
+    def _name_from_query(self, query_string: str) -> Optional[str]:
         """Extract and validate the student name from a URL query string."""
         params = parse_qs(query_string)
         raw = params.get("name", [""])[0]
@@ -219,7 +220,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             payload = self.state.file_list_payload(student_name)
         self._send_json(payload)
 
-    def _resolve_requested_file(self, parsed_url):
+    def _resolve_requested_file(self, parsed_url: ParseResult) -> Optional[Path]:
         student_name = self._name_from_query(parsed_url.query)
         if not student_name:
             self._send_html("<h1>Nicht erlaubt</h1>", status=HTTPStatus.FORBIDDEN)

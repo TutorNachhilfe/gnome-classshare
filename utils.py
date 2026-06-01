@@ -1,15 +1,21 @@
 import base64
+import logging
 import re
 import socket
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
 
 def get_local_ip() -> str:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.connect(("10.255.255.255", 1))
             return sock.getsockname()[0]
-    except OSError:
+    except OSError as exc:
+        logger.warning("Lokale IP-Adresse konnte nicht ermittelt werden: %s", exc)
         return "127.0.0.1"
 
 
@@ -68,7 +74,7 @@ def strip_timestamp_prefix(filename: str) -> str:
     return filename
 
 
-def parse_timestamp_prefix(filename: str) -> datetime | None:
+def parse_timestamp_prefix(filename: str) -> Optional[datetime]:
     if "__" not in filename:
         return None
     prefix = filename.split("__", 1)[0]
