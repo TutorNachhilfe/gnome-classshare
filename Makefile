@@ -39,3 +39,6 @@ uninstall:
 
 test:
 	python3 tests/test_utils.py
+	python3 tests/test_pdf_annotate_routes.py
+	python3 tests/test_file_lists_and_ids.py
+	python3 -m pytest tests/test_core.py -v
