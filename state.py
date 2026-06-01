@@ -1,3 +1,4 @@
+import base64
 import json
 import threading
 from datetime import datetime
@@ -6,6 +7,10 @@ from urllib.parse import quote
 
 from constants import CLASSSHARE_ROOT
 from utils import format_size, get_local_ip, parse_timestamp_prefix, strip_timestamp_prefix
+
+
+def _encode_pdf_id(value: str) -> str:
+    return base64.urlsafe_b64encode(value.encode("utf-8")).rstrip(b"=").decode("ascii")
 
 def _ws_send_text(sock, text: str) -> bool:
     payload = text.encode("utf-8")
@@ -131,6 +136,8 @@ class ClassShareState:
                     }
                 )
             items.sort(key=lambda item: item["mtime"], reverse=True)
+            for item in items:
+                item["pdf_id"] = _encode_pdf_id(item["download"])
             return items
 
         return {
@@ -144,12 +151,28 @@ class ClassShareState:
         names = self.student_names()
         for name in names:
             _, received_dir, sent_dir = self.student_paths(name)
-            received_count = len([p for p in received_dir.glob("*") if p.is_file()]) if received_dir.exists() else 0
-            sent_files_list = []
-            if sent_dir.exists():
-                sf = sorted([p for p in sent_dir.glob("*") if p.is_file()], key=lambda f: f.stat().st_mtime, reverse=True)
-                for fp in sf:
-                    sent_files_list.append({"filename": strip_timestamp_prefix(fp.name), "path": str(fp), "folder": str(fp.parent)})
+
+            def read_files(path: Path, scope: str):
+                files_list = []
+                if not path.exists():
+                    return files_list
+                sorted_files = sorted([p for p in path.glob("*") if p.is_file()], key=lambda f: f.stat().st_mtime, reverse=True)
+                for fp in sorted_files:
+                    download = f"/download?name={quote(name)}&scope={scope}&file={quote(fp.name)}"
+                    files_list.append(
+                        {
+                            "filename": strip_timestamp_prefix(fp.name),
+                            "path": str(fp),
+                            "folder": str(fp.parent),
+                            "download": download,
+                            "pdf_id": _encode_pdf_id(download),
+                        }
+                    )
+                return files_list
+
+            received_files_list = read_files(received_dir, "received")
+            sent_files_list = read_files(sent_dir, "sent")
+            received_count = len(received_files_list)
             sent_count = len(sent_files_list)
             is_online = bool(self.ws_connections.get(name))
             rows.append(
@@ -157,6 +180,7 @@ class ClassShareState:
                     "name": name,
                     "received": received_count,
                     "sent": sent_count,
+                    "received_files": received_files_list,
                     "sent_files": sent_files_list,
                     "last_active": self.last_active.get(name, "-"),
                     "online": is_online,

@@ -6,20 +6,20 @@
   <title>PDF Annotieren</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #666; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { background: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 
     #toolbar {
       position: fixed;
       top: 0; left: 0; right: 0;
-      background: #1e1e1e;
-      color: #f0f0f0;
+      background: #f5f5f5;
+      color: #1a1a1a;
       display: flex;
       align-items: center;
       flex-wrap: wrap;
       gap: 6px;
       padding: 6px 10px;
       z-index: 100;
-      box-shadow: 0 2px 6px rgba(0,0,0,.4);
+      box-shadow: 0 2px 6px rgba(0,0,0,.15);
     }
     #toolbar label { font-size: 13px; display: flex; align-items: center; gap: 4px; }
     #toolbar input[type=color] {
@@ -31,9 +31,9 @@
     #toolbar select {
       padding: 4px 6px;
       border-radius: 6px;
-      background: #333;
-      color: #f0f0f0;
-      border: 1px solid #555;
+      background: #fff;
+      color: #1a1a1a;
+      border: 1px solid #ccc;
       font-size: 13px;
       cursor: pointer;
     }
@@ -41,14 +41,14 @@
       padding: 5px 10px;
       border: 2px solid transparent;
       border-radius: 6px;
-      background: #333;
-      color: #f0f0f0;
+      background: #e8e8e8;
+      color: #1a1a1a;
       cursor: pointer;
       font-size: 13px;
       white-space: nowrap;
     }
-    #toolbar button:hover { background: #444; }
-    #toolbar button.active { border-color: #4da6ff; background: #1a3a5c; }
+    #toolbar button:hover { background: #d0d0d0; }
+    #toolbar button.active { border-color: #1a73e8; background: #e8f0fe; color: #1a1a1a; }
     #status { margin-left: auto; font-size: 12px; opacity: .7; white-space: nowrap; }
 
     #pages {
@@ -78,6 +78,25 @@
       width: 100%;
       height: 100%;
       touch-action: pan-x pan-y pinch-zoom;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #666; }
+      #toolbar {
+        background: #1e1e1e;
+        color: #f0f0f0;
+        box-shadow: 0 2px 6px rgba(0,0,0,.4);
+      }
+      #toolbar select {
+        background: #333;
+        color: #f0f0f0;
+        border-color: #555;
+      }
+      #toolbar button {
+        background: #333;
+        color: #f0f0f0;
+      }
+      #toolbar button:hover { background: #444; }
+      #toolbar button.active { border-color: #4da6ff; background: #1a3a5c; color: #f0f0f0; }
     }
   </style>
 </head>
@@ -135,17 +154,30 @@
     } else {
 
     // ── Tool buttons ────────────────────────────────────────────────────────
-    btnPen.addEventListener('click', () => setTool(tool === 'pen' ? 'none' : 'pen'));
+    btnPen.addEventListener('click', () => {
+      if (tool === 'none') setTool('pen');
+      else if (tool === 'pen') setTool('eraser');
+      else setTool('none');
+    });
     btnEraser.addEventListener('click', () => setTool(tool === 'eraser' ? 'none' : 'eraser'));
 
     function setTool(t) {
       tool = t;
-      btnPen.classList.toggle('active', tool === 'pen');
+      btnPen.classList.toggle('active', tool === 'pen' || tool === 'eraser');
       btnEraser.classList.toggle('active', tool === 'eraser');
+      if (tool === 'pen') {
+        btnPen.textContent = '✏️ Stift ✓';
+      } else if (tool === 'eraser') {
+        btnPen.textContent = '🧹 Radierer';
+      } else {
+        btnPen.textContent = '✏️ Stift';
+      }
       pages.forEach(p => {
         p.annCanvas.style.pointerEvents = (tool === 'pen' || tool === 'eraser') ? 'auto' : 'none';
       });
     }
+
+    setTool('pen');
 
     document.getElementById('btnUndo').addEventListener('click', () => {
       if (!strokes.length) return;
@@ -365,7 +397,7 @@
           annCanvas.className = 'ann-canvas';
           annCanvas.width  = pdfCanvas.width;
           annCanvas.height = pdfCanvas.height;
-          annCanvas.style.pointerEvents = 'none';
+          annCanvas.style.pointerEvents = (tool === 'pen' || tool === 'eraser') ? 'auto' : 'none';
 
           wrap.appendChild(pdfCanvas);
           wrap.appendChild(annCanvas);

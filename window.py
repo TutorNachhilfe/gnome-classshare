@@ -586,13 +586,14 @@ class ClassShareWindow(Adw.ApplicationWindow):
 
             outer_box.append(row_box)
 
-            sent_files = entry.get("sent_files", [])
-            if sent_files:
-                expander = Gtk.Expander(label=f"📨 {len(sent_files)} {'Datei' if len(sent_files) == 1 else 'Dateien'} eingereicht")
+            def build_files_expander(files, label_prefix: str, singular: str, plural: str):
+                if not files:
+                    return None
+                expander = Gtk.Expander(label=f"{label_prefix} {len(files)} {singular if len(files) == 1 else plural}")
                 files_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
                 files_box.set_margin_top(4)
                 files_box.set_margin_start(8)
-                for f in sent_files:
+                for f in files:
                     file_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
                     file_row.set_margin_top(2)
                     file_row.set_margin_bottom(2)
@@ -610,7 +611,11 @@ class ClassShareWindow(Adw.ApplicationWindow):
                     file_row.append(view_btn)
 
                     if f["filename"].lower().endswith(".pdf") and self.state.server_port:
-                        pdf_id = base64.urlsafe_b64encode(f["path"].encode()).rstrip(b"=").decode()
+                        pdf_id = f.get("pdf_id")
+                        if not pdf_id and f.get("download"):
+                            pdf_id = base64.urlsafe_b64encode(f["download"].encode()).rstrip(b"=").decode()
+                        if not pdf_id:
+                            pdf_id = base64.urlsafe_b64encode(f["path"].encode()).rstrip(b"=").decode()
                         ann_url = f"http://localhost:{self.state.server_port}/annotate?pdf={pdf_id}"
                         ann_btn = Gtk.Button(label="📝 Annotieren")
                         ann_btn.add_css_class("flat")
@@ -624,7 +629,17 @@ class ClassShareWindow(Adw.ApplicationWindow):
 
                     files_box.append(file_row)
                 expander.set_child(files_box)
-                outer_box.append(expander)
+                return expander
+
+            received_files = entry.get("received_files", [])
+            received_expander = build_files_expander(received_files, "📥", "Datei empfangen", "Dateien empfangen")
+            if received_expander:
+                outer_box.append(received_expander)
+
+            sent_files = entry.get("sent_files", [])
+            sent_expander = build_files_expander(sent_files, "📨", "Datei eingereicht", "Dateien eingereicht")
+            if sent_expander:
+                outer_box.append(sent_expander)
 
             row.set_child(outer_box)
             self.overview_list.append(row)

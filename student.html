@@ -380,14 +380,14 @@
       }
 
       if (file.filename.toLowerCase().endsWith('.pdf') && file.download) {
-        const pdfId = btoa(file.download).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        const pdfId = file.pdf_id || btoa(file.download).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
         const annBtn = document.createElement('a');
         annBtn.className = 'btn btn-ghost';
         annBtn.href = '/annotate?pdf=' + pdfId;
         annBtn.target = '_blank';
         annBtn.rel = 'noopener noreferrer';
         annBtn.title = 'Annotieren';
-        annBtn.textContent = '\u{1F4DD}';
+        annBtn.textContent = '\u{1F4DD} Annotieren';
         row.appendChild(annBtn);
       }
 
@@ -409,6 +409,10 @@
     function updateFiles(data) {
       allFiles = (data.received || [])
         .map(function(f) { return Object.assign({}, f, {scope: 'received'}); })
+        .concat(
+          (data.sent || [])
+            .map(function(f) { return Object.assign({}, f, {scope: 'sent'}); })
+        )
         .sort(function(a, b) { return (b.mtime || 0) - (a.mtime || 0); });
       renderFiles();
     }
