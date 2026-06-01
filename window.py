@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import base64
 import json
 import logging
 import shutil
@@ -11,7 +10,7 @@ from gi.repository import Adw, Gdk, GLib, Gio, Gtk, Pango
 
 from constants import CONFIG_DIR, SETTINGS_FILE
 from qr_utils import make_qr_texture
-from utils import safe_unique_path, sanitize_filename, strip_timestamp_prefix, timestamp_prefix
+from utils import encode_pdf_id, safe_unique_path, sanitize_filename, strip_timestamp_prefix, timestamp_prefix
 
 
 class ClassShareWindow(Adw.ApplicationWindow):
@@ -611,11 +610,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
                     file_row.append(view_btn)
 
                     if f["filename"].lower().endswith(".pdf") and self.state.server_port:
-                        pdf_id = f.get("pdf_id")
-                        if not pdf_id and f.get("download"):
-                            pdf_id = base64.urlsafe_b64encode(f["download"].encode()).rstrip(b"=").decode()
-                        if not pdf_id:
-                            pdf_id = base64.urlsafe_b64encode(f["path"].encode()).rstrip(b"=").decode()
+                        pdf_id = f.get("pdf_id") or encode_pdf_id(f.get("download") or f["path"])
                         ann_url = f"http://localhost:{self.state.server_port}/annotate?pdf={pdf_id}"
                         ann_btn = Gtk.Button(label="📝 Annotieren")
                         ann_btn.add_css_class("flat")

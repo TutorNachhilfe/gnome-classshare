@@ -1,3 +1,4 @@
+import base64
 import re
 import socket
 from datetime import datetime
@@ -18,6 +19,10 @@ def format_size(size_bytes: int) -> str:
     if size_bytes < 1024 * 1024:
         return f"{round(size_bytes / 1024)} KB"
     return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+
+def encode_pdf_id(value: str) -> str:
+    return base64.urlsafe_b64encode(value.encode("utf-8")).rstrip(b"=").decode("ascii")
 
 
 def sanitize_student_name(raw: str) -> str:

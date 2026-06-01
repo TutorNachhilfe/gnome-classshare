@@ -167,10 +167,13 @@
       btnEraser.classList.toggle('active', tool === 'eraser');
       if (tool === 'pen') {
         btnPen.textContent = '✏️ Stift ✓';
+        btnPen.setAttribute('aria-label', 'Stift aktiviert');
       } else if (tool === 'eraser') {
         btnPen.textContent = '🧹 Radierer';
+        btnPen.setAttribute('aria-label', 'Radierer aktiviert');
       } else {
         btnPen.textContent = '✏️ Stift';
+        btnPen.setAttribute('aria-label', 'Stift');
       }
       pages.forEach(p => {
         p.annCanvas.style.pointerEvents = (tool === 'pen' || tool === 'eraser') ? 'auto' : 'none';

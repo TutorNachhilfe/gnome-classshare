@@ -1,9 +1,10 @@
 """Grundlegende Tests für utils.py und constants.py."""
+import base64
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from utils import sanitize_filename, sanitize_student_name, strip_timestamp_prefix, timestamp_prefix
+from utils import encode_pdf_id, sanitize_filename, sanitize_student_name, strip_timestamp_prefix, timestamp_prefix
 
 
 def test_sanitize_filename_basic():
@@ -44,6 +45,15 @@ def test_timestamp_prefix_format():
     prefix = timestamp_prefix()
     assert isinstance(prefix, str)
     assert len(prefix) > 0
+
+
+def test_encode_pdf_id_roundtrip():
+    raw = "/download?name=Anna&scope=received&file=test.pdf"
+    encoded = encode_pdf_id(raw)
+    assert isinstance(encoded, str)
+    assert encoded
+    padded = encoded + "=" * (-len(encoded) % 4)
+    assert base64.urlsafe_b64decode(padded).decode("utf-8") == raw
 
 
 def test_constants_types():

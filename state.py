@@ -1,4 +1,3 @@
-import base64
 import json
 import threading
 from datetime import datetime
@@ -6,11 +5,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from constants import CLASSSHARE_ROOT
-from utils import format_size, get_local_ip, parse_timestamp_prefix, strip_timestamp_prefix
-
-
-def _encode_pdf_id(value: str) -> str:
-    return base64.urlsafe_b64encode(value.encode("utf-8")).rstrip(b"=").decode("ascii")
+from utils import encode_pdf_id, format_size, get_local_ip, parse_timestamp_prefix, strip_timestamp_prefix
 
 def _ws_send_text(sock, text: str) -> bool:
     payload = text.encode("utf-8")
@@ -137,7 +132,7 @@ class ClassShareState:
                 )
             items.sort(key=lambda item: item["mtime"], reverse=True)
             for item in items:
-                item["pdf_id"] = _encode_pdf_id(item["download"])
+                item["pdf_id"] = encode_pdf_id(item["download"])
             return items
 
         return {
@@ -152,7 +147,7 @@ class ClassShareState:
         for name in names:
             _, received_dir, sent_dir = self.student_paths(name)
 
-            def read_files(path: Path, scope: str):
+            def build_file_list(path: Path, scope: str):
                 files_list = []
                 if not path.exists():
                     return files_list
@@ -165,13 +160,13 @@ class ClassShareState:
                             "path": str(fp),
                             "folder": str(fp.parent),
                             "download": download,
-                            "pdf_id": _encode_pdf_id(download),
+                            "pdf_id": encode_pdf_id(download),
                         }
                     )
                 return files_list
 
-            received_files_list = read_files(received_dir, "received")
-            sent_files_list = read_files(sent_dir, "sent")
+            received_files_list = build_file_list(received_dir, "received")
+            sent_files_list = build_file_list(sent_dir, "sent")
             received_count = len(received_files_list)
             sent_count = len(sent_files_list)
             is_online = bool(self.ws_connections.get(name))
