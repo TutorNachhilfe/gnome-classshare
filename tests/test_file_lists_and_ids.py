@@ -59,6 +59,19 @@ def test_student_template_mentions_sent_list_and_annotate_button_label():
     assert "\\u{1F4DD} Annotieren" in content
 
 
+def test_student_template_has_darkmode_variables_for_used_selectors():
+    student_path = Path(__file__).resolve().parent.parent / "student.html"
+    content = student_path.read_text(encoding="utf-8")
+
+    assert "--bg: #f5f5f5;" in content
+    assert "--card: #fff;" in content
+    assert "--border: #ddd;" in content
+    assert "@media (prefers-color-scheme: dark)" in content
+    assert "--bg: #1a1a1a;" in content
+    assert "--card: #2a2a2a;" in content
+    assert "--border: #444;" in content
+
+
 if __name__ == "__main__":
     import traceback
 

@@ -83,6 +83,23 @@ def test_viewer_pen_button_cycles_and_starts_enabled():
     assert "setTool('pen');" in content
 
 
+def test_viewer_has_pdf_save_button_and_pdf_lib_export_logic():
+    viewer_path = Path(__file__).resolve().parent.parent / "pdf_annotate" / "viewer.html"
+    content = viewer_path.read_text(encoding="utf-8")
+
+    assert '<button id="btnSave" title="Als PDF speichern">💾 Speichern</button>' in content
+    assert '<script src="https://unpkg.com/pdf-lib/dist/pdf-lib.min.js"></script>' in content
+    assert "const pdfUrl = `/pdf-file?pdf=${encodeURIComponent(pdfId)}`;" in content
+    assert "btnSave.addEventListener('click', async () => {" in content
+    assert "setStatus('❌ PDF-Export nicht verfügbar');" in content
+    assert "const canvas = pages[i].annCanvas;" in content
+    assert "const pngDataUrl = canvas.toDataURL('image/png');" in content
+    assert "const pdfDoc = await PDFLib.PDFDocument.load(pdfBytes);" in content
+    assert "page.drawImage(pngImage, { x: 0, y: 0, width, height });" in content
+    assert "a.download = 'annotiert.pdf';" in content
+    assert "console.error('PDF export failed:', err);" in content
+
+
 def test_viewer_uses_light_theme_with_darkmode_override():
     viewer_path = Path(__file__).resolve().parent.parent / "pdf_annotate" / "viewer.html"
     content = viewer_path.read_text(encoding="utf-8")

@@ -115,16 +115,19 @@
     <button id="btnEraser">🧹 Radierer</button>
     <button id="btnUndo">↩️ Rückgängig</button>
     <button id="btnClear">🗑️ Alles löschen</button>
+    <button id="btnSave" title="Als PDF speichern">💾 Speichern</button>
     <span id="status"></span>
   </div>
   <div id="pages"></div>
 
   <script src="/pdf-js/pdf.min.js"></script>
+  <script src="https://unpkg.com/pdf-lib/dist/pdf-lib.min.js"></script>
   <script>
     'use strict';
 
     const params = new URLSearchParams(location.search);
     const pdfId  = params.get('pdf') || '';
+    const pdfUrl = `/pdf-file?pdf=${encodeURIComponent(pdfId)}`;
 
     // ── State ───────────────────────────────────────────────────────────────
     let strokes = [];          // { color, width, points:[[x,y],...], pageIndex }
@@ -140,6 +143,7 @@
     const widthPicker = document.getElementById('widthPicker');
     const btnPen      = document.getElementById('btnPen');
     const btnEraser   = document.getElementById('btnEraser');
+    const btnSave     = document.getElementById('btnSave');
     const statusEl    = document.getElementById('status');
 
     function setStatus(msg) { statusEl.textContent = msg; }
@@ -196,6 +200,41 @@
       redrawAll();
       saveAnnotations();
       wsSend({ type: 'clear' });
+    });
+
+    btnSave.addEventListener('click', async () => {
+      if (typeof PDFLib === 'undefined' || !pages.length) {
+        setStatus('❌ PDF-Export nicht verfügbar');
+        return;
+      }
+      try {
+        setStatus('⏳ Exportiere PDF…');
+        const pdfBytes = await fetch(pdfUrl).then(r => r.arrayBuffer());
+        const pdfDoc = await PDFLib.PDFDocument.load(pdfBytes);
+
+        for (let i = 0; i < pdfDoc.getPageCount() && i < pages.length; i++) {
+          const canvas = pages[i].annCanvas;
+          const pngDataUrl = canvas.toDataURL('image/png');
+          const pngBytes = await fetch(pngDataUrl).then(r => r.arrayBuffer());
+          const pngImage = await pdfDoc.embedPng(pngBytes);
+          const page = pdfDoc.getPage(i);
+          const { width, height } = page.getSize();
+          page.drawImage(pngImage, { x: 0, y: 0, width, height });
+        }
+
+        const savedBytes = await pdfDoc.save();
+        const blob = new Blob([savedBytes], { type: 'application/pdf' });
+        const a = document.createElement('a');
+        const url = URL.createObjectURL(blob);
+        a.href = url;
+        a.download = 'annotiert.pdf';
+        a.click();
+        URL.revokeObjectURL(url);
+        setStatus('✅ PDF gespeichert');
+      } catch (err) {
+        console.error('PDF export failed:', err);
+        setStatus('❌ PDF-Export fehlgeschlagen');
+      }
     });
 
     // ── Drawing ──────────────────────────────────────────────────────────────
@@ -376,7 +415,7 @@
       setStatus('⏳ Lade PDF…');
       try {
         const pdf = await pdfjsLib.getDocument(
-          `/pdf-file?pdf=${encodeURIComponent(pdfId)}`
+          pdfUrl
         ).promise;
 
         const container = document.getElementById('pages');
