@@ -10,5 +10,10 @@ SETTINGS_FILE = CONFIG_DIR / "settings.json"
 APP_DESKTOP_ID = "gnome-classshare.desktop"
 CLASSSHARE_ROOT = Path.home() / "ClassShare"
 MDNS_HOSTNAME = "tutor.local"
+HTTPS_HOSTNAME = "local.tutor.schule"
+
+# Standardpfade für Let's Encrypt Zertifikat
+SSL_CERT_PATH = Path("/etc/letsencrypt/live/local.tutor.schule/fullchain.pem")
+SSL_KEY_PATH  = Path("/etc/letsencrypt/live/local.tutor.schule/privkey.pem")
 CUSTOM_ICON_DIR = Path.home() / ".local" / "share" / "gnome-classshare"
 CUSTOM_ICON_PATH = CUSTOM_ICON_DIR / "icon.png"
