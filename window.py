@@ -9,7 +9,7 @@ from typing import Optional
 
 from gi.repository import Adw, Gdk, GLib, Gio, Gtk, Pango
 
-from constants import CONFIG_DIR, CUSTOM_ICON_DIR, CUSTOM_ICON_PATH, MDNS_HOSTNAME, SETTINGS_FILE
+from constants import CONFIG_DIR, CUSTOM_ICON_DIR, CUSTOM_ICON_PATH, HTTPS_HOSTNAME, MDNS_HOSTNAME, SETTINGS_FILE
 from qr_utils import make_qr_texture
 from utils import encode_pdf_id, safe_unique_path, sanitize_filename, strip_timestamp_prefix, timestamp_prefix
 
@@ -499,6 +499,8 @@ class ClassShareWindow(Adw.ApplicationWindow):
         self.toast_overlay.add_toast(Adw.Toast(title=f"📤 {copied_files} Datei(en) gesendet"))
 
     def _url_for_students(self) -> str:
+        if self.state.ssl_active:
+            return f"https://{HTTPS_HOSTNAME}:{self.state.server_port}/"
         return f"http://{MDNS_HOSTNAME}:{self.state.server_port}/"
 
     def _set_qr(self, picture, url):

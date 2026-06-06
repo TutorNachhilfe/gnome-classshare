@@ -86,6 +86,7 @@ class ClassShareState:
         self.lock: threading.RLock = threading.RLock()
         self.app_name: str = "ClassShare"
         self.logo_path: Optional[str] = None
+        self.ssl_active: bool = False
 
     def student_names(self) -> list[str]:
         names = [p.name for p in self.base_dir.iterdir() if p.is_dir()]
