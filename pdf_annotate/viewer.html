@@ -77,7 +77,7 @@
       top: 0; left: 0;
       width: 100%;
       height: 100%;
-      touch-action: pan-x pan-y pinch-zoom;
+      touch-action: none;
     }
     @media (prefers-color-scheme: dark) {
       body { background: #666; }
@@ -180,7 +180,9 @@
         btnPen.setAttribute('aria-label', 'Stift');
       }
       pages.forEach(p => {
-        p.annCanvas.style.pointerEvents = (tool === 'pen' || tool === 'eraser') ? 'auto' : 'none';
+        const active = (tool === 'pen' || tool === 'eraser');
+        p.annCanvas.style.pointerEvents = active ? 'auto' : 'none';
+        p.annCanvas.style.touchAction = active ? 'none' : 'pan-x pan-y pinch-zoom';
       });
     }
 
@@ -230,7 +232,23 @@
         a.download = 'annotiert.pdf';
         a.click();
         URL.revokeObjectURL(url);
-        setStatus('✅ PDF gespeichert');
+
+        try {
+          setStatus('⏳ Speichere auf Server…');
+          const resp = await fetch(`/api/annotations/bake?pdf=${encodeURIComponent(pdfId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/pdf' },
+            body: savedBytes,
+          });
+          if (resp.ok) {
+            setStatus('✅ PDF gespeichert (lokal + Server)');
+          } else {
+            setStatus('⚠️ Lokal gespeichert, Server-Upload fehlgeschlagen');
+          }
+        } catch (err) {
+          console.warn('Server-Upload fehlgeschlagen:', err);
+          setStatus('⚠️ Lokal gespeichert, Server nicht erreichbar');
+        }
       } catch (err) {
         console.error('PDF export failed:', err);
         setStatus('❌ PDF-Export fehlgeschlagen');
@@ -262,23 +280,26 @@
       annCanvas.addEventListener('pointermove', e => {
         if (e.pointerType === 'touch') return;
         if (!drawing) return;
-        const pt = canvasPt(annCanvas, e);
-        if (tool === 'pen' && currentStroke) {
-          currentStroke.points.push(pt);
-          const pg = pages[pageIndex];
-          const pts = currentStroke.points;
-          if (pts.length >= 2) {
-            pg.ctx.beginPath();
-            pg.ctx.strokeStyle = currentStroke.color;
-            pg.ctx.lineWidth   = currentStroke.width;
-            pg.ctx.lineCap     = 'round';
-            pg.ctx.lineJoin    = 'round';
-            pg.ctx.moveTo(pts[pts.length - 2][0], pts[pts.length - 2][1]);
-            pg.ctx.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
-            pg.ctx.stroke();
+        const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+        for (const ev of events) {
+          const pt = canvasPt(annCanvas, ev);
+          if (tool === 'pen' && currentStroke) {
+            currentStroke.points.push(pt);
+            const pg = pages[pageIndex];
+            const pts = currentStroke.points;
+            if (pts.length >= 2) {
+              pg.ctx.beginPath();
+              pg.ctx.strokeStyle = currentStroke.color;
+              pg.ctx.lineWidth   = currentStroke.width;
+              pg.ctx.lineCap     = 'round';
+              pg.ctx.lineJoin    = 'round';
+              pg.ctx.moveTo(pts[pts.length - 2][0], pts[pts.length - 2][1]);
+              pg.ctx.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
+              pg.ctx.stroke();
+            }
+          } else if (tool === 'eraser') {
+            eraseAt(pageIndex, pt);
           }
-        } else if (tool === 'eraser') {
-          eraseAt(pageIndex, pt);
         }
       });
 
@@ -295,6 +316,18 @@
           saveAnnotations();
         }
         currentStroke = null;
+      });
+
+      annCanvas.addEventListener('pointercancel', e => {
+        if (!drawing) return;
+        drawing = false;
+        if (tool === 'pen' && currentStroke && currentStroke.points.length >= 2) {
+          strokes.push(currentStroke);
+          wsSend({ type: 'stroke', stroke: currentStroke });
+          saveAnnotations();
+        }
+        currentStroke = null;
+        annCanvas.releasePointerCapture(e.pointerId);
       });
     }
 
