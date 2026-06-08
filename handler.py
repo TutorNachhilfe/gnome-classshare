@@ -147,6 +147,11 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             parsed_url = urlparse(self.path)
             AnnotationRoutes.handle_annotations_post(self, parsed_url)
             return
+        if path == "/api/annotations/bake":
+            from pdf_annotate.routes import AnnotationRoutes
+            parsed_url = urlparse(self.path)
+            AnnotationRoutes.handle_annotations_bake(self, parsed_url)
+            return
         self._send_html("<h1>Nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
 
     def _handle_root(self):

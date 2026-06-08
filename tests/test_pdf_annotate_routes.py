@@ -64,11 +64,44 @@ def test_viewer_allows_touch_scroll_but_blocks_touch_drawing():
     viewer_path = Path(__file__).resolve().parent.parent / "pdf_annotate" / "viewer.html"
     content = viewer_path.read_text(encoding="utf-8")
 
-    assert "touch-action: pan-x pan-y pinch-zoom;" in content
+    assert "touch-action: none;" in content
     assert "if (e.pointerType === 'touch') return;" in content
     assert "annCanvas.addEventListener('pointerdown', e => {" in content
     assert "annCanvas.addEventListener('pointermove', e => {" in content
     assert "annCanvas.addEventListener('pointerup', e => {" in content
+
+
+def test_viewer_has_pointercancel_handler():
+    viewer_path = Path(__file__).resolve().parent.parent / "pdf_annotate" / "viewer.html"
+    content = viewer_path.read_text(encoding="utf-8")
+
+    assert "annCanvas.addEventListener('pointercancel', e => {" in content
+    assert "annCanvas.releasePointerCapture(e.pointerId);" in content
+
+
+def test_viewer_setTool_updates_touch_action():
+    viewer_path = Path(__file__).resolve().parent.parent / "pdf_annotate" / "viewer.html"
+    content = viewer_path.read_text(encoding="utf-8")
+
+    assert "p.annCanvas.style.touchAction = active ? 'none' : 'pan-x pan-y pinch-zoom';" in content
+
+
+def test_viewer_pointermove_uses_coalesced_events():
+    viewer_path = Path(__file__).resolve().parent.parent / "pdf_annotate" / "viewer.html"
+    content = viewer_path.read_text(encoding="utf-8")
+
+    assert "e.getCoalescedEvents ? e.getCoalescedEvents() : [e]" in content
+    assert "for (const ev of events) {" in content
+
+
+def test_viewer_btnSave_posts_to_bake_endpoint():
+    viewer_path = Path(__file__).resolve().parent.parent / "pdf_annotate" / "viewer.html"
+    content = viewer_path.read_text(encoding="utf-8")
+
+    assert "/api/annotations/bake?pdf=" in content
+    assert "method: 'POST'," in content
+    assert "'Content-Type': 'application/pdf'" in content
+    assert "Server-Upload fehlgeschlagen" in content
 
 
 def test_viewer_pen_button_cycles_and_starts_enabled():
@@ -116,6 +149,98 @@ def test_viewer_uses_light_theme_with_darkmode_override():
 def test_pdfjs_url_methods_return_fixed_paths():
     assert routes.AnnotationRoutes._pdfjs_main_url() == "/pdf-js/pdf.min.js"
     assert routes.AnnotationRoutes._pdfjs_worker_url() == "/pdf-js/pdf.worker.min.js"
+
+
+def test_handle_annotations_bake_missing_pdf_param():
+    import io
+    from http import HTTPStatus
+    from urllib.parse import urlparse
+
+    class JsonHandler:
+        def __init__(self):
+            self.last_json = None
+            self.last_status = None
+            self.headers = {}
+            self.rfile = io.BytesIO(b"")
+
+        def _send_json(self, data, status=HTTPStatus.OK):
+            self.last_json = data
+            self.last_status = status
+
+    handler = JsonHandler()
+    parsed_url = urlparse("/api/annotations/bake")
+    routes.AnnotationRoutes.handle_annotations_bake(handler, parsed_url)
+    assert handler.last_status == HTTPStatus.BAD_REQUEST
+    assert "error" in handler.last_json
+
+
+def test_handle_annotations_bake_invalid_pdf_id():
+    import io
+    from http import HTTPStatus
+    from urllib.parse import urlparse
+
+    class JsonHandler:
+        def __init__(self):
+            self.last_json = None
+            self.last_status = None
+            self.headers = {}
+            self.rfile = io.BytesIO(b"")
+
+        def _send_json(self, data, status=HTTPStatus.OK):
+            self.last_json = data
+            self.last_status = status
+
+    handler = JsonHandler()
+    parsed_url = urlparse("/api/annotations/bake?pdf=!!!invalid!!!")
+    routes.AnnotationRoutes.handle_annotations_bake(handler, parsed_url)
+    assert handler.last_status == HTTPStatus.BAD_REQUEST
+
+
+def test_handle_annotations_bake_success():
+    import io
+    import base64
+    from http import HTTPStatus
+    from urllib.parse import urlparse, quote
+
+    from constants import CLASSSHARE_ROOT
+
+    # Create a real PDF file inside CLASSSHARE_ROOT for the test
+    pdf_dir = CLASSSHARE_ROOT / "_test_bake_student" / "empfangen"
+    pdf_dir.mkdir(parents=True, exist_ok=True)
+    pdf_file = pdf_dir / "test_bake.pdf"
+    original_bytes = b"%PDF-1.4 original content"
+    pdf_file.write_bytes(original_bytes)
+
+    try:
+        pdf_id = base64.urlsafe_b64encode(
+            b"?name=_test_bake_student&scope=received&file=test_bake.pdf"
+        ).rstrip(b"=").decode()
+
+        new_bytes = b"%PDF-1.4 annotated content"
+
+        class JsonHandler:
+            def __init__(self):
+                self.last_json = None
+                self.last_status = HTTPStatus.OK
+                self.rfile = io.BytesIO(new_bytes)
+                self.headers = {"Content-Length": str(len(new_bytes))}
+
+            def _send_json(self, data, status=HTTPStatus.OK):
+                self.last_json = data
+                self.last_status = status
+
+        handler = JsonHandler()
+        parsed_url = urlparse(f"/api/annotations/bake?pdf={quote(pdf_id)}")
+        routes.AnnotationRoutes.handle_annotations_bake(handler, parsed_url)
+
+        assert handler.last_json == {"ok": True}
+        assert pdf_file.read_bytes() == new_bytes
+        bak_file = pdf_file.with_suffix(".pdf.bak")
+        assert bak_file.exists()
+        assert bak_file.read_bytes() == original_bytes
+    finally:
+        import shutil
+        shutil.rmtree(CLASSSHARE_ROOT / "_test_bake_student", ignore_errors=True)
 
 
 if __name__ == "__main__":

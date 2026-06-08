@@ -184,6 +184,64 @@ class AnnotationRoutes:
         handler._send_json({"ok": True})
 
     @staticmethod
+    def handle_annotations_bake(handler, parsed_url):
+        """POST /api/annotations/bake?pdf=<pdf_id> – overwrite the PDF file with annotated version."""
+        import shutil
+
+        params = parse_qs(parsed_url.query)
+        pdf_id = params.get("pdf", [""])[0]
+        if not pdf_id:
+            handler._send_json({"error": "Fehlender pdf-Parameter"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        pdf_path = AnnotationRoutes._decode_pdf_id(pdf_id)
+        if pdf_path is None:
+            handler._send_json({"error": "Ungültige pdf_id"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if pdf_path.suffix.lower() != ".pdf":
+            handler._send_json({"error": "Keine PDF-Datei"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if not pdf_path.is_file():
+            handler._send_json({"error": "PDF nicht gefunden"}, status=HTTPStatus.NOT_FOUND)
+            return
+
+        try:
+            content_length = int(handler.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            handler._send_json({"error": "Ungültige Anfrage"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        # Max 200 MB
+        if content_length <= 0 or content_length > 200 * 1024 * 1024:
+            handler._send_json({"error": "Ungültige Dateigröße"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        pdf_bytes = handler.rfile.read(content_length)
+
+        # Backup anlegen (nur beim ersten Mal)
+        bak_path = pdf_path.with_suffix(".pdf.bak")
+        if not bak_path.exists():
+            try:
+                shutil.copy2(pdf_path, bak_path)
+            except OSError as exc:
+                logging.warning("Backup konnte nicht erstellt werden: %s", exc)
+
+        # PDF überschreiben
+        try:
+            pdf_path.write_bytes(pdf_bytes)
+            logging.info("PDF mit Annotationen überschrieben: %s", pdf_path)
+        except OSError as exc:
+            logging.error("PDF konnte nicht gespeichert werden: %s", exc)
+            handler._send_json(
+                {"error": "Fehler beim Speichern"}, status=HTTPStatus.INTERNAL_SERVER_ERROR
+            )
+            return
+
+        handler._send_json({"ok": True})
+
+    @staticmethod
     def handle_annotation_ws(handler, parsed_url):
         """WebSocket /ws/annotate?pdf=<pdf_id> – live annotation sync."""
         params = parse_qs(parsed_url.query)
