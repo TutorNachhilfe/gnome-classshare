@@ -503,6 +503,12 @@ class ClassShareWindow(Adw.ApplicationWindow):
             return f"https://{HTTPS_HOSTNAME}:{self.state.server_port}/"
         return f"http://{MDNS_HOSTNAME}:{self.state.server_port}/"
 
+    def _annotate_url(self, pdf_id: str) -> str:
+        """Annotierungs-URL passend zum aktiven Schema (https/http) und Hostname."""
+        if self.state.ssl_active:
+            return f"https://{HTTPS_HOSTNAME}:{self.state.server_port}/annotate?pdf={pdf_id}"
+        return f"http://localhost:{self.state.server_port}/annotate?pdf={pdf_id}"
+
     def _set_qr(self, picture, url):
         texture = make_qr_texture(url)
         picture.set_paintable(texture)
@@ -621,7 +627,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
 
                     if f["filename"].lower().endswith(".pdf") and self.state.server_port:
                         pdf_id = f.get("pdf_id") or encode_pdf_id(f.get("download") or f["path"])
-                        ann_url = f"http://localhost:{self.state.server_port}/annotate?pdf={pdf_id}"
+                        ann_url = self._annotate_url(pdf_id)
                         ann_btn = Gtk.Button(label="📝 Annotieren")
                         ann_btn.add_css_class("flat")
                         ann_btn.connect("clicked", self._open_url, ann_url)
