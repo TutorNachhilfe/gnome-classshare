@@ -9,7 +9,7 @@ from typing import Optional
 
 from gi.repository import Adw, Gdk, GLib, Gio, Gtk, Pango
 
-from constants import CONFIG_DIR, CUSTOM_ICON_DIR, CUSTOM_ICON_PATH, HTTPS_HOSTNAME, MDNS_HOSTNAME, SETTINGS_FILE
+from constants import CONFIG_DIR, CUSTOM_ICON_DIR, CUSTOM_ICON_PATH, HTTPS_HOSTNAME, MDNS_HOSTNAME, SETTINGS_FILE, SSL_CERT_PATH, SSL_KEY_PATH
 from qr_utils import make_qr_texture
 from utils import encode_pdf_id, safe_unique_path, sanitize_filename, strip_timestamp_prefix, timestamp_prefix
 
@@ -242,12 +242,39 @@ class ClassShareWindow(Adw.ApplicationWindow):
         logo_row.append(logo_btn)
         box.append(logo_row)
 
+        ssl_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        ssl_label = Gtk.Label(label="HTTPS")
+        ssl_label.set_xalign(0)
+        ssl_label.set_hexpand(True)
+        ssl_row.append(ssl_label)
+        self.ssl_switch = Gtk.Switch()
+        self.ssl_switch.set_valign(Gtk.Align.CENTER)
+        self._ssl_handler_id = self.ssl_switch.connect("notify::active", self._on_ssl_switch_changed)
+        ssl_row.append(self.ssl_switch)
+        box.append(ssl_row)
+
         return frame
 
     def _on_app_name_changed(self, entry):
         name = entry.get_text().strip() or "ClassShare"
         self.state.app_name = name
         self.set_title(name)
+        self._save_settings()
+
+    def _on_ssl_switch_changed(self, switch, _param):
+        active = switch.get_active()
+        if active and not (SSL_CERT_PATH.is_file() and SSL_KEY_PATH.is_file()):
+            self.ssl_switch.handler_block(self._ssl_handler_id)
+            self.ssl_switch.set_active(False)
+            self.ssl_switch.handler_unblock(self._ssl_handler_id)
+            self.state.ssl_active = False
+            toast = Adw.Toast.new("⚠️ SSL-Zertifikat nicht gefunden – HTTP-Fallback aktiv")
+            self.toast_overlay.add_toast(toast)
+            self._update_qr()
+            self._save_settings()
+            return
+        self.state.ssl_active = active
+        self._update_qr()
         self._save_settings()
 
     def _choose_logo(self, *_):
@@ -698,6 +725,11 @@ class ClassShareWindow(Adw.ApplicationWindow):
                 if logo_path and Path(logo_path).is_file():
                     self.state.logo_path = logo_path
                     self.logo_path_label.set_text(Path(logo_path).name)
+                ssl_active = data.get("ssl_active", self.state.ssl_active)
+                self.state.ssl_active = ssl_active
+                self.ssl_switch.handler_block(self._ssl_handler_id)
+                self.ssl_switch.set_active(ssl_active)
+                self.ssl_switch.handler_unblock(self._ssl_handler_id)
                 return
         except Exception as exc:
             logging.warning("Einstellungen konnten nicht geladen werden: %s", exc)
@@ -706,6 +738,10 @@ class ClassShareWindow(Adw.ApplicationWindow):
             self.state.logo_path = str(CUSTOM_ICON_PATH)
             self.logo_path_label.set_text(CUSTOM_ICON_PATH.name)
         self.set_default_size(900, 740)
+        # Set switch to match current server-detected ssl_active state
+        self.ssl_switch.handler_block(self._ssl_handler_id)
+        self.ssl_switch.set_active(self.state.ssl_active)
+        self.ssl_switch.handler_unblock(self._ssl_handler_id)
 
     def _save_settings(self):
         try:
@@ -715,6 +751,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
                 "height": self.get_height(),
                 "app_name": self.state.app_name,
                 "logo_path": self.state.logo_path,
+                "ssl_active": self.state.ssl_active,
             }
             SETTINGS_FILE.write_text(json.dumps(data))
         except Exception as exc:
