@@ -267,12 +267,9 @@ class ClassShareWindow(Adw.ApplicationWindow):
             self.ssl_switch.handler_block(self._ssl_handler_id)
             self.ssl_switch.set_active(False)
             self.ssl_switch.handler_unblock(self._ssl_handler_id)
-            self.state.ssl_active = False
+            active = False
             toast = Adw.Toast.new("⚠️ SSL-Zertifikat nicht gefunden – HTTP-Fallback aktiv")
             self.toast_overlay.add_toast(toast)
-            self._update_qr()
-            self._save_settings()
-            return
         self.state.ssl_active = active
         self._update_qr()
         self._save_settings()
