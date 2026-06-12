@@ -2,71 +2,104 @@
 <html lang="de">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="theme-color" content="#4b5563">
   <title>__APP_NAME__</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/bold/style.css">
   <style>
     :root {
-      --bg: #f5f5f5;
+      --bg: #f0f2f5;
       --card: #fff;
       --text: #1a1a1a;
-      --accent: #0066cc;
-      --border: #ddd;
+      --text-secondary: #666;
+      --accent: #4b5563;
+      --accent-light: #f3f4f6;
+      --border: #e5e7eb;
+      --shadow: 0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
+      --danger: #ef4444;
+      --success: #22c55e;
     }
     @media (prefers-color-scheme: dark) {
       :root {
         --bg: #1a1a1a;
         --card: #2a2a2a;
-        --text: #f0f0f0;
-        --accent: #4da6ff;
-        --border: #444;
+        --text: #e5e5e5;
+        --text-secondary: #999;
+        --accent: #888;
+        --accent-light: #333;
+        --border: #3a3a3a;
+        --shadow: 0 1px 3px rgba(0,0,0,.4);
+        --danger: #f87171;
+        --success: #4ade80;
       }
       .logo { filter: invert(1); }
     }
-    *, *::before, *::after { box-sizing: border-box; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background: var(--bg);
       color: var(--text);
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+      overscroll-behavior: none;
     }
 
-    /* ── Login screen ── */
+    /* ── Login ── */
     #login-screen {
-      min-height: 100vh;
+      min-height: 100dvh;
       display: grid;
       place-items: center;
-      padding: 1rem;
+      padding: 1.5rem;
     }
-    .card {
-      width: min(420px, 100%);
+    .login-card {
+      width: min(400px, 100%);
       background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      padding: 2rem;
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      padding: 2.5rem 2rem;
+      text-align: center;
     }
-    .card h1 { margin: 0 0 1rem 0; font-size: clamp(1.8rem, 6vw, 2.5rem); }
+    .avatar-circle {
+      width: 72px; height: 72px;
+      border-radius: 50%;
+      background: var(--accent-light);
+      display: inline-flex;
+      align-items: center; justify-content: center;
+      font-size: 2rem;
+      margin-bottom: 1.25rem;
+    }
+    .login-card h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: .5rem; }
+    .login-card p { color: var(--text-secondary); font-size: .9rem; margin-bottom: 1.5rem; }
     .name-input {
       width: 100%;
-      padding: 1rem;
-      font-size: clamp(1rem, 4vw, 1.4rem);
+      padding: .85rem 1rem;
+      font-size: 1.1rem;
       border-radius: 14px;
-      border: 1px solid var(--border);
+      border: 2px solid var(--border);
       background: var(--bg);
       color: var(--text);
-      margin-bottom: .75rem;
+      margin-bottom: 1rem;
+      transition: border-color .2s;
+      outline: none;
     }
+    .name-input:focus { border-color: var(--accent); }
     .login-btn {
       width: 100%;
-      padding: 1rem;
+      padding: .85rem;
       border: 0;
       border-radius: 14px;
-      font-size: clamp(1rem, 4vw, 1.3rem);
-      font-weight: 700;
+      font-size: 1.1rem;
+      font-weight: 600;
       background: var(--accent);
       color: #fff;
       cursor: pointer;
+      transition: opacity .15s;
     }
-    .error { color: #e11d48; font-weight: 700; margin: .25rem 0 .75rem 0; font-size: .95rem; }
+    .login-btn:active { opacity: .85; }
+    .error { color: var(--danger); font-weight: 600; margin-bottom: .75rem; font-size: .9rem; }
 
     /* ── Student screen ── */
     #student-screen {
@@ -80,175 +113,228 @@
       flex-direction: column;
       flex: 1;
       overflow: hidden;
-      max-width: 800px;
+      max-width: 720px;
       width: 100%;
       margin: 0 auto;
       padding: .75rem;
       gap: .75rem;
     }
+
+    /* Header */
     .header {
       display: flex;
       justify-content: space-between;
       align-items: center;
       background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: .75rem 1rem;
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      padding: .65rem 1rem;
       flex-shrink: 0;
       gap: .75rem;
     }
-    .brand { font-weight: 700; font-size: 1.05rem; }
-    .logo { height: 1.4em; width: auto; vertical-align: middle; margin-right: .3rem; border-radius: 3px; }
-    .who { display: flex; align-items: center; gap: .5rem; }
+    .brand {
+      font-weight: 700; font-size: 1.1rem;
+      display: flex; align-items: center; gap: .35rem;
+    }
+    .logo { height: 1.5em; width: auto; border-radius: 4px; }
+    .who {
+      display: flex; align-items: center; gap: .5rem;
+      font-size: .9rem; color: var(--text-secondary);
+    }
+    .who-avatar {
+      width: 32px; height: 32px; border-radius: 50%;
+      background: var(--accent-light);
+      display: inline-flex;
+      align-items: center; justify-content: center;
+      font-size: .9rem; flex-shrink: 0;
+    }
     .logout {
-      border: 1px solid var(--border);
-      background: transparent;
-      color: var(--text);
-      border-radius: 10px;
-      padding: .35rem .55rem;
+      border: 0;
+      background: none;
+      color: var(--text-secondary);
+      font-size: 1.15rem;
       cursor: pointer;
-      font-size: .95rem;
+      padding: .25rem .4rem;
+      border-radius: 8px;
     }
-    .main-content {
-      display: flex;
-      flex-direction: column;
-      flex: 1;
-      overflow: hidden;
-      gap: .75rem;
-    }
+    .logout:active { background: var(--border); }
+
+    /* Drop zone */
     .dropzone-area {
       flex-shrink: 0;
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: .8rem;
     }
     .drop {
       border: 2px dashed var(--border);
-      border-radius: 12px;
+      border-radius: 16px;
       text-align: center;
-      padding: 1.4rem .8rem;
-      background: var(--bg);
+      padding: 1.2rem .8rem;
+      background: var(--card);
+      box-shadow: var(--shadow);
       cursor: pointer;
+      transition: border-color .2s, background .2s;
     }
+    .drop.active { border-color: var(--accent); background: var(--accent-light); }
+    .drop-icon { font-size: 2rem; margin-bottom: .35rem; }
+    .drop-text { font-size: .95rem; color: var(--text-secondary); }
     .choose {
-      margin-top: .7rem;
+      margin-top: .5rem;
       border: 0;
       border-radius: 10px;
-      padding: .55rem .8rem;
+      padding: .5rem 1rem;
       background: var(--accent);
       color: #fff;
       font-weight: 600;
+      font-size: .9rem;
       cursor: pointer;
     }
-    .file-list-area {
-      flex: 1;
-      overflow: hidden;
+
+    /* Tabs */
+    .tabs {
       display: flex;
-      flex-direction: column;
+      gap: .25rem;
       background: var(--card);
-      border: 1px solid var(--border);
       border-radius: 14px;
-      min-height: 0;
+      box-shadow: var(--shadow);
+      padding: .3rem;
+      flex-shrink: 0;
     }
+    .tab {
+      flex: 1;
+      border: 0;
+      background: none;
+      color: var(--text-secondary);
+      font-size: .9rem;
+      font-weight: 500;
+      padding: .55rem .5rem;
+      border-radius: 11px;
+      cursor: pointer;
+      transition: all .15s;
+      white-space: nowrap;
+    }
+    .tab.active { background: var(--bg); color: var(--text); font-weight: 700; }
+
+    /* File list */
     .file-list-scroll {
       flex: 1;
       overflow-y: auto;
       -webkit-overflow-scrolling: touch;
-      padding: .6rem;
       display: flex;
       flex-direction: column;
-      gap: .45rem;
+      gap: .4rem;
+      min-height: 0;
     }
-    .row {
+    .file-row {
       display: flex;
       align-items: center;
-      gap: .45rem;
-      padding: .65rem .75rem;
-      border: 1px solid var(--border);
+      gap: .5rem;
+      padding: .6rem .75rem;
+      background: var(--card);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      min-height: 52px;
+      transition: transform .15s;
+    }
+    .file-row:active { transform: scale(.99); }
+    .file-icon {
+      width: 40px; height: 40px;
       border-radius: 10px;
-      background: var(--bg);
-      min-height: 48px;
-    }
-    .name {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      flex: 1;
-      min-width: 0;
-    }
-    .meta {
-      font-size: .84rem;
-      opacity: .75;
-      white-space: nowrap;
+      background: var(--accent-light);
+      display: flex;
+      align-items: center; justify-content: center;
+      font-size: 1.2rem;
       flex-shrink: 0;
     }
-    .btn {
-      border: 0;
-      background: var(--accent);
-      color: #fff;
-      border-radius: 8px;
-      padding: .35rem .55rem;
-      text-decoration: none;
-      font-size: 1rem;
+    .file-info {
+      flex: 1; min-width: 0;
+      display: flex; flex-direction: column; gap: .15rem;
+    }
+    .file-name {
+      font-size: .92rem; font-weight: 500;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .file-meta {
+      font-size: .78rem; color: var(--text-secondary);
+      display: flex; align-items: center; gap: .35rem;
+    }
+    .file-meta .check { color: var(--success); }
+    .file-actions {
+      display: flex; gap: .25rem; flex-shrink: 0;
+    }
+    .act {
+      width: 38px; height: 38px;
+      border: 0; border-radius: 10px;
+      background: none;
+      color: var(--text-secondary);
+      font-size: 1.1rem;
       cursor: pointer;
       display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 44px;
-      min-height: 44px;
-      flex-shrink: 0;
+      align-items: center; justify-content: center;
+      text-decoration: none;
+      transition: background .15s;
     }
-    .btn-ghost {
-      background: transparent;
-      border: 1px solid var(--border);
-      color: var(--text);
-    }
+    .act:hover, .act:active { background: var(--bg); }
+    .act.dl { background: var(--accent); color: #fff; }
+    .act.dl:hover, .act.dl:active { opacity: .85; }
+    .act.danger { color: var(--danger); }
 
+    .empty-state {
+      text-align: center;
+      padding: 3rem 1rem;
+      color: var(--text-secondary);
+    }
+    .empty-state .empty-icon { font-size: 3rem; margin-bottom: .75rem; }
+    .empty-state .empty-text { font-size: .95rem; }
+
+    /* Toast */
     #toast {
       position: fixed;
-      left: 50%;
-      transform: translateX(-50%);
-      top: 1rem;
-      background: var(--text);
-      color: var(--bg);
-      border-radius: 10px;
-      padding: .65rem .9rem;
+      left: 50%; transform: translateX(-50%);
+      top: .75rem;
+      background: #333;
+      color: #fff;
+      border-radius: 12px;
+      padding: .6rem 1rem;
+      font-size: .9rem;
+      font-weight: 500;
       display: none;
-      z-index: 20;
-      max-width: min(92vw, 560px);
+      z-index: 100;
+      box-shadow: 0 4px 12px rgba(0,0,0,.25);
+      white-space: nowrap;
     }
+    @media (prefers-color-scheme: dark) {
+      #toast { background: #e5e5e5; color: #1a1a1a; }
+    }
+
     @media (max-width: 480px) {
-      .wrap { padding: .5rem; gap: .5rem; }
-      .drop { padding: 1rem .6rem; }
-      .meta { display: none; }
-    }
-    @media (min-width: 481px) and (max-width: 768px) {
-      .wrap { padding: .6rem; gap: .6rem; }
+      .wrap { padding: .4rem; gap: .5rem; }
+      .file-name { font-size: .85rem; }
+      .act { width: 34px; height: 34px; font-size: 1rem; }
+      .tab { font-size: .8rem; padding: .45rem .4rem; }
     }
     @media (orientation: landscape) and (max-width: 1024px) {
-      .main-content { flex-direction: row; }
-      .dropzone-area { width: 40%; flex-shrink: 0; display: flex; flex-direction: column; justify-content: center; }
-      .file-list-area { flex: 1; width: 60%; }
-    }
-    @media (min-width: 1025px) {
-      .row { padding: .55rem .75rem; }
+      .wrap { flex-direction: row; flex-wrap: wrap; max-width: 100%; }
+      .header { width: 100%; }
+      .dropzone-area { width: 38%; flex-shrink: 0; }
+      .tabs { width: 100%; }
+      .file-list-scroll { width: 100%; }
     }
   </style>
 </head>
 <body>
 
-  <!-- Login screen -->
+  <!-- Login -->
   <div id="login-screen">
-    <main class="card">
-      <h1>&#x1F464; Dein Name</h1>
+    <div class="login-card">
+      <div class="avatar-circle"><i class="ph-bold ph-user"></i></div>
+      <h1>Willkommen</h1>
+      <p>Gib deinen Namen ein, um Dateien mit deinem Tutor auszutauschen.</p>
       <p id="login-error" class="error" style="display:none"></p>
       <form id="login-form">
         <input id="name-input" class="name-input" type="text"
                autocomplete="name" placeholder="Vorname Nachname" required autofocus>
-        <button class="login-btn" type="submit">Weiter &#x2192;</button>
+        <button class="login-btn" type="submit">Anmelden</button>
       </form>
-    </main>
+    </div>
   </div>
 
   <!-- Student screen -->
@@ -257,38 +343,61 @@
     <div class="wrap">
       <div class="header">
         <div class="brand">__BRAND_HTML__</div>
-        <div class="who">&#x1F464; <span id="current-name"></span>
-          <button id="logout" class="logout">&#x21A9;&#xFE0F;</button></div>
-      </div>
-      <div class="main-content">
-        <div class="dropzone-area">
-          <div id="dropzone" class="drop">
-            <div>&#x1F4E4; Datei hierher ziehen</div>
-            <button id="choose" class="choose" type="button">oder Datei w&#xE4;hlen</button>
-            <input id="file-input" type="file" name="files" multiple hidden>
-          </div>
-        </div>
-        <div class="file-list-area">
-          <div id="file-list" class="file-list-scroll"></div>
+        <div class="who">
+          <span class="who-avatar"><i class="ph-bold ph-user"></i></span>
+          <span id="current-name"></span>
+          <button id="logout" class="logout" title="Abmelden"><i class="ph-bold ph-sign-out"></i></button>
         </div>
       </div>
+      <div class="dropzone-area">
+        <div id="dropzone" class="drop">
+          <div class="drop-icon"><i class="ph-bold ph-upload-simple"></i></div>
+          <div class="drop-text">Datei hierher ziehen</div>
+          <button id="choose" class="choose" type="button">oder Datei wählen</button>
+          <input id="file-input" type="file" name="files" multiple hidden>
+        </div>
+      </div>
+      <div class="tabs">
+        <button class="tab active" data-tab="received"><i class="ph-bold ph-download-simple"></i> Vom Tutor</button>
+        <button class="tab" data-tab="sent"><i class="ph-bold ph-upload-simple"></i> Eingereicht</button>
+      </div>
+      <div id="file-list" class="file-list-scroll"></div>
     </div>
   </div>
 
   <script>
     const STORAGE_KEY = 'classshare_name';
+    const FILE_ICONS = {
+      pdf: 'ph-file-text', img: 'ph-file-image', video: 'ph-file-video',
+      audio: 'ph-file-audio', archive: 'ph-file-archive', code: 'ph-file-code',
+      doc: 'ph-file', default: 'ph-file'
+    };
 
     const toast = document.getElementById('toast');
     const fileList = document.getElementById('file-list');
     let allFiles = [];
     let currentName = '';
     let wsConn = null;
+    let activeTab = 'received';
+
+    function fileIcon(name) {
+      var ext = name.split('.').pop().toLowerCase();
+      var cls = FILE_ICONS.default;
+      if (ext === 'pdf') cls = FILE_ICONS.pdf;
+      else if (/png|jpe?g|gif|webp|svg|bmp/i.test(ext)) cls = FILE_ICONS.img;
+      else if (/mp4|webm|mov|avi/i.test(ext)) cls = FILE_ICONS.video;
+      else if (/mp3|wav|ogg|flac|m4a/i.test(ext)) cls = FILE_ICONS.audio;
+      else if (/zip|rar|7z|tar|gz/i.test(ext)) cls = FILE_ICONS.archive;
+      else if (/js|ts|py|html|css|json|xml/i.test(ext)) cls = FILE_ICONS.code;
+      else if (/docx?|xlsx?|pptx?|odt|ods/i.test(ext)) cls = FILE_ICONS.doc;
+      return '<i class="ph ' + cls + '"></i>';
+    }
 
     function showToast(text) {
       toast.textContent = text;
       toast.style.display = 'block';
       clearTimeout(showToast._timer);
-      showToast._timer = setTimeout(() => { toast.style.display = 'none'; }, 3200);
+      showToast._timer = setTimeout(function() { toast.style.display = 'none'; }, 3000);
     }
 
     function showLoginScreen() {
@@ -305,30 +414,34 @@
       connectWebSocket();
     }
 
-    // Check localStorage on load
     (function init() {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        showStudentScreen(stored);
-      } else {
-        showLoginScreen();
-      }
+      var stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) { showStudentScreen(stored); }
+      else { showLoginScreen(); }
+
+      document.querySelectorAll('.tab').forEach(function(t) {
+        t.addEventListener('click', function() {
+          document.querySelectorAll('.tab').forEach(function(x) { x.classList.remove('active'); });
+          t.classList.add('active');
+          activeTab = t.dataset.tab;
+          renderFiles();
+        });
+      });
     })();
 
-    // Login
     document.getElementById('login-form').addEventListener('submit', async function(e) {
       e.preventDefault();
-      const nameInput = document.getElementById('name-input');
-      const errorEl = document.getElementById('login-error');
-      const name = nameInput.value.trim();
+      var nameInput = document.getElementById('name-input');
+      var errorEl = document.getElementById('login-error');
+      var name = nameInput.value.trim();
       errorEl.style.display = 'none';
       try {
-        const response = await fetch('/api/login', {
+        var response = await fetch('/api/login', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({name: name})
         });
-        const data = await response.json();
+        var data = await response.json();
         if (data.ok) {
           localStorage.setItem(STORAGE_KEY, data.name);
           showStudentScreen(data.name);
@@ -342,7 +455,6 @@
       }
     });
 
-    // Logout
     document.getElementById('logout').addEventListener('click', function() {
       localStorage.removeItem(STORAGE_KEY);
       currentName = '';
@@ -351,59 +463,116 @@
     });
 
     function renderRow(file) {
-      const row = document.createElement('div');
-      row.className = 'row';
+      var row = document.createElement('div');
+      row.className = 'file-row';
 
-      const icon = file.scope === 'received' ? '\u{1F4E5}' : '\u{1F4E4}';
-      const ack = file.scope === 'sent' ? '\u2705\u00a0' : '';
+      var iconDiv = document.createElement('div');
+      iconDiv.className = 'file-icon';
+      iconDiv.innerHTML = fileIcon(file.filename);
+      row.appendChild(iconDiv);
 
-      const nameDiv = document.createElement('div');
-      nameDiv.className = 'name';
-      nameDiv.textContent = icon + '\u00a0' + file.filename;
+      var info = document.createElement('div');
+      info.className = 'file-info';
 
-      const metaDiv = document.createElement('div');
-      metaDiv.className = 'meta';
-      metaDiv.textContent = ack + file.size_human + ' \u00b7 ' + file.timestamp;
+      var nameDiv = document.createElement('div');
+      nameDiv.className = 'file-name';
+      nameDiv.textContent = file.filename;
+      info.appendChild(nameDiv);
 
-      row.appendChild(nameDiv);
-      row.appendChild(metaDiv);
+      var meta = document.createElement('div');
+      meta.className = 'file-meta';
+      if (file.scope === 'sent') {
+        var check = document.createElement('i');
+        check.className = 'ph-bold ph-check';
+        check.style.color = 'var(--success)';
+        meta.appendChild(check);
+      }
+      var sizeSpan = document.createElement('span');
+      sizeSpan.textContent = file.size_human;
+      meta.appendChild(sizeSpan);
+      var dot = document.createElement('span');
+      dot.textContent = '\u00b7';
+      meta.appendChild(dot);
+      var timeSpan = document.createElement('span');
+      timeSpan.textContent = file.timestamp;
+      meta.appendChild(timeSpan);
+      info.appendChild(meta);
+      row.appendChild(info);
+
+      var actions = document.createElement('div');
+      actions.className = 'file-actions';
 
       if (file.view) {
-        const viewBtn = document.createElement('a');
-        viewBtn.className = 'btn btn-ghost';
+        var viewBtn = document.createElement('a');
+        viewBtn.className = 'act';
         viewBtn.href = file.view;
         viewBtn.target = '_blank';
         viewBtn.rel = 'noopener noreferrer';
         viewBtn.title = 'Anzeigen';
-        viewBtn.textContent = '\u{1F441}\uFE0F';
-        row.appendChild(viewBtn);
+        viewBtn.innerHTML = '<i class="ph-bold ph-eye"></i>';
+        actions.appendChild(viewBtn);
       }
 
       if (file.filename.toLowerCase().endsWith('.pdf') && file.download) {
-        const pdfId = file.pdf_id || btoa(file.download).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-        const annBtn = document.createElement('a');
-        annBtn.className = 'btn btn-ghost';
+        var pdfId = file.file_id || btoa(file.download).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        var annBtn = document.createElement('a');
+        annBtn.className = 'act';
         annBtn.href = '/annotate?pdf=' + pdfId;
         annBtn.target = '_blank';
         annBtn.rel = 'noopener noreferrer';
         annBtn.title = 'Annotieren';
-        annBtn.textContent = '\u{1F4DD} Annotieren';
-        row.appendChild(annBtn);
+        annBtn.innerHTML = '<i class="ph-bold ph-note-pencil"></i>';
+        actions.appendChild(annBtn);
       }
 
-      const dlBtn = document.createElement('a');
-      dlBtn.className = 'btn';
+      if (/\.(png|jpe?g|webp|gif|bmp)$/i.test(file.filename) && file.download) {
+        var id = file.pdf_id || btoa(file.download).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        var annBtn = document.createElement('a');
+        annBtn.className = 'act';
+        annBtn.href = '/annotate-img?img=' + id;
+        annBtn.target = '_blank';
+        annBtn.rel = 'noopener noreferrer';
+        annBtn.title = 'Bild annotieren';
+        annBtn.innerHTML = '<i class="ph-bold ph-image"></i>';
+        actions.appendChild(annBtn);
+      }
+
+      var delBtn = document.createElement('button');
+      delBtn.className = 'act danger';
+      delBtn.title = 'Löschen';
+      delBtn.innerHTML = '<i class="ph-bold ph-trash"></i>';
+      delBtn.onclick = function() { deleteFile(file); };
+      actions.appendChild(delBtn);
+
+      var dlBtn = document.createElement('a');
+      dlBtn.className = 'act dl';
       dlBtn.href = file.download;
       dlBtn.title = 'Herunterladen';
-      dlBtn.textContent = '\u2B07\uFE0F';
-      row.appendChild(dlBtn);
+      dlBtn.innerHTML = '<i class="ph-bold ph-download-simple"></i>';
+      actions.appendChild(dlBtn);
 
+      row.appendChild(actions);
       return row;
     }
 
     function renderFiles() {
       fileList.replaceChildren();
-      allFiles.forEach(function(file) { fileList.appendChild(renderRow(file)); });
+      var filtered = allFiles.filter(function(f) { return f.scope === activeTab; });
+      if (filtered.length === 0) {
+        var empty = document.createElement('div');
+        empty.className = 'empty-state';
+        var iconDiv = document.createElement('div');
+        iconDiv.className = 'empty-icon';
+        iconDiv.innerHTML = activeTab === 'received' ? '<i class="ph-bold ph-download-simple"></i>' : '<i class="ph-bold ph-upload-simple"></i>';
+        empty.appendChild(iconDiv);
+        var text = document.createElement('div');
+        text.className = 'empty-text';
+        text.textContent = activeTab === 'received' ? 'Noch keine Dateien vom Tutor' : 'Noch nichts eingereicht';
+        empty.appendChild(text);
+        fileList.appendChild(empty);
+        return;
+      }
+      filtered.forEach(function(file) { fileList.appendChild(renderRow(file)); });
     }
 
     function updateFiles(data) {
@@ -420,22 +589,36 @@
     async function loadFiles() {
       if (!currentName) return;
       try {
-        const response = await fetch('/api/files?name=' + encodeURIComponent(currentName), {cache: 'no-store'});
+        var response = await fetch('/api/files?name=' + encodeURIComponent(currentName), {cache: 'no-store'});
         if (!response.ok) return;
         updateFiles(await response.json());
       } catch (_) {}
     }
 
+    async function deleteFile(file) {
+      if (!currentName || !file.scope) return;
+      try {
+        var parts = file.download.split('?')[1];
+        var response = await fetch('/delete?' + parts, {method: 'POST'});
+        if (response.ok) {
+          showToast('\u2705 Datei gel\u00f6scht');
+          await loadFiles();
+        } else {
+          var data = await response.json().catch(function() { return {}; });
+          showToast(data.error || 'Fehler beim L\u00f6schen');
+        }
+      } catch (_) {
+        showToast('L\u00f6schen fehlgeschlagen');
+      }
+    }
+
     async function uploadFiles(files) {
       if (!files || files.length === 0 || !currentName) return;
-      const body = new FormData();
-      for (const file of files) body.append('files', file);
+      var body = new FormData();
+      for (var i = 0; i < files.length; i++) body.append('files', files[i]);
       try {
-        const response = await fetch('/upload?name=' + encodeURIComponent(currentName), {method: 'POST', body: body});
-        if (!response.ok) {
-          showToast('Upload fehlgeschlagen');
-          return;
-        }
+        var response = await fetch('/upload?name=' + encodeURIComponent(currentName), {method: 'POST', body: body});
+        if (!response.ok) { showToast('Upload fehlgeschlagen'); return; }
         await loadFiles();
         showToast('\u2705 Datei hochgeladen');
       } catch (_) {
@@ -443,34 +626,28 @@
       }
     }
 
-    const fileInput = document.getElementById('file-input');
-    const dropzone = document.getElementById('dropzone');
+    var fileInput = document.getElementById('file-input');
+    var dropzone = document.getElementById('dropzone');
 
     document.getElementById('choose').addEventListener('click', function() { fileInput.click(); });
     fileInput.addEventListener('change', function() { uploadFiles(fileInput.files); });
 
-    dropzone.addEventListener('dragover', function(event) {
-      event.preventDefault();
-      dropzone.style.borderColor = 'var(--accent)';
-    });
-    dropzone.addEventListener('dragleave', function() {
-      dropzone.style.borderColor = 'var(--border)';
-    });
-    dropzone.addEventListener('drop', function(event) {
-      event.preventDefault();
-      dropzone.style.borderColor = 'var(--border)';
-      uploadFiles(event.dataTransfer.files);
+    dropzone.addEventListener('dragover', function(e) { e.preventDefault(); dropzone.classList.add('active'); });
+    dropzone.addEventListener('dragleave', function() { dropzone.classList.remove('active'); });
+    dropzone.addEventListener('drop', function(e) {
+      e.preventDefault();
+      dropzone.classList.remove('active');
+      uploadFiles(e.dataTransfer.files);
     });
 
     function connectWebSocket() {
       if (!currentName) return;
-      const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-      wsConn = new WebSocket(scheme + '://' + location.host + '/ws?name=' + encodeURIComponent(currentName));
+      wsConn = new WebSocket('ws://' + location.host + '/ws?name=' + encodeURIComponent(currentName));
       wsConn.onmessage = function(event) {
         try {
-          const payload = JSON.parse(event.data);
+          var payload = JSON.parse(event.data);
           if (payload.type === 'new_file') {
-            showToast('\u{1F4C4} Neue Datei von Tutor: ' + payload.filename);
+            showToast('\u{1F4C4} Neue Datei: ' + payload.filename);
           }
           if (payload.type === 'file_list') {
             updateFiles(payload);
@@ -481,6 +658,11 @@
         wsConn = null;
         if (currentName) setTimeout(connectWebSocket, 1500);
       };
+    }
+  </script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(function() {});
     }
   </script>
 </body>

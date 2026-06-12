@@ -1,6 +1,8 @@
 import logging
 import threading
 
+from state import _ws_send_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,8 +32,6 @@ class AnnotationRelay:
 
     def broadcast(self, pdf_id: str, message: bytes, exclude=None):
         """Send a raw text message to all connections in the room except the sender."""
-        from state import _ws_send_text
-
         try:
             text = message.decode("utf-8")
         except Exception as exc:

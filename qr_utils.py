@@ -19,7 +19,11 @@ def make_qr_texture(url: str) -> Gdk.Texture | None:
     buffer = io.BytesIO()
     img.save(buffer, format="PNG")
     loader = GdkPixbuf.PixbufLoader.new_with_type("png")
-    loader.write(buffer.getvalue())
-    loader.close()
-    pixbuf = loader.get_pixbuf()
+    try:
+        loader.write(buffer.getvalue())
+        loader.close()
+        pixbuf = loader.get_pixbuf()
+    except Exception:
+        loader.close()
+        return None
     return Gdk.Texture.new_for_pixbuf(pixbuf)

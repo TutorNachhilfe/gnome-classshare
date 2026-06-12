@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from constants import CLASSSHARE_ROOT, WS_TIMEOUT_SECONDS
-from state import _ws_recv_frame
+from state import _ws_recv_frame, _ws_send_frame, _ws_send_json
 from pdf_annotate.storage import load_annotations, save_annotations
 from pdf_annotate.ws_relay import relay
 
@@ -84,12 +84,20 @@ class AnnotationRoutes:
     @staticmethod
     def handle_pdfjs_main(handler, parsed_url):
         """Serve the bundled pdf.min.js."""
-        handler._send_bytes(_PDFJS_MAIN.read_bytes(), "application/javascript; charset=utf-8")
+        try:
+            handler._send_bytes(_PDFJS_MAIN.read_bytes(), "application/javascript; charset=utf-8")
+        except OSError as exc:
+            logging.error("pdf.min.js konnte nicht geladen werden: %s", exc)
+            handler._send_html("<h1>Fehler: pdf.min.js nicht gefunden</h1>", status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
     @staticmethod
     def handle_pdfjs_worker(handler, parsed_url):
         """Serve the bundled pdf.worker.min.js."""
-        handler._send_bytes(_PDFJS_WORKER.read_bytes(), "application/javascript; charset=utf-8")
+        try:
+            handler._send_bytes(_PDFJS_WORKER.read_bytes(), "application/javascript; charset=utf-8")
+        except OSError as exc:
+            logging.error("pdf.worker.min.js konnte nicht geladen werden: %s", exc)
+            handler._send_html("<h1>Fehler: pdf.worker.min.js nicht gefunden</h1>", status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
     @staticmethod
     def handle_pdf_file(handler, parsed_url):
@@ -124,32 +132,32 @@ class AnnotationRoutes:
 
     @staticmethod
     def handle_annotations_get(handler, parsed_url):
-        """GET /api/annotations?pdf=<pdf_id> – return stored annotations as JSON."""
+        """GET /api/annotations?pdf=<id> or ?img=<id> – return stored annotations."""
         params = parse_qs(parsed_url.query)
-        pdf_id = params.get("pdf", [""])[0]
-        if not pdf_id:
-            handler._send_json({"error": "Fehlender pdf-Parameter"}, status=HTTPStatus.BAD_REQUEST)
+        encoded_id = params.get("img", [""])[0] or params.get("pdf", [""])[0]
+        if not encoded_id:
+            handler._send_json({"error": "Fehlender Parameter"}, status=HTTPStatus.BAD_REQUEST)
             return
 
-        pdf_path = AnnotationRoutes._decode_pdf_id(pdf_id)
-        if pdf_path is None:
-            handler._send_json({"error": "Ungültige pdf_id"}, status=HTTPStatus.BAD_REQUEST)
+        file_path = AnnotationRoutes._decode_pdf_id(encoded_id)
+        if file_path is None:
+            handler._send_json({"error": "Ungültige ID"}, status=HTTPStatus.BAD_REQUEST)
             return
 
-        handler._send_json(load_annotations(pdf_path))
+        handler._send_json(load_annotations(file_path))
 
     @staticmethod
     def handle_annotations_post(handler, parsed_url):
-        """POST /api/annotations?pdf=<pdf_id> – replace all annotations."""
+        """POST /api/annotations?pdf=<id> or ?img=<id> – replace all annotations."""
         params = parse_qs(parsed_url.query)
-        pdf_id = params.get("pdf", [""])[0]
-        if not pdf_id:
-            handler._send_json({"error": "Fehlender pdf-Parameter"}, status=HTTPStatus.BAD_REQUEST)
+        encoded_id = params.get("img", [""])[0] or params.get("pdf", [""])[0]
+        if not encoded_id:
+            handler._send_json({"error": "Fehlender Parameter"}, status=HTTPStatus.BAD_REQUEST)
             return
 
-        pdf_path = AnnotationRoutes._decode_pdf_id(pdf_id)
-        if pdf_path is None:
-            handler._send_json({"error": "Ungültige pdf_id"}, status=HTTPStatus.BAD_REQUEST)
+        file_path = AnnotationRoutes._decode_pdf_id(encoded_id)
+        if file_path is None:
+            handler._send_json({"error": "Ungültige ID"}, status=HTTPStatus.BAD_REQUEST)
             return
 
         try:
@@ -173,7 +181,7 @@ class AnnotationRoutes:
             return
 
         try:
-            save_annotations(pdf_path, data)
+            save_annotations(file_path, data)
         except OSError as exc:
             logging.error("Annotationen konnten nicht gespeichert werden: %s", exc)
             handler._send_json(
@@ -271,13 +279,20 @@ class AnnotationRoutes:
         conn.settimeout(WS_TIMEOUT_SECONDS)
         relay.join(pdf_id, conn)
 
+        # Send existing strokes to newly connected client
+        file_path = AnnotationRoutes._decode_pdf_id(pdf_id)
+        if file_path:
+            existing = load_annotations(file_path)
+            if existing.get("strokes"):
+                _ws_send_json(conn, {"type": "sync", "strokes": existing["strokes"]})
+
         try:
             while True:
                 opcode, payload = _ws_recv_frame(conn)
                 if opcode is None or opcode == 0x8:
                     break
                 if opcode == 0x9:  # ping → pong
-                    conn.sendall(bytes([0x8A, len(payload)]) + payload)
+                    _ws_send_frame(conn, 0xA, payload)
                 if opcode == 0x1:  # text frame: relay to all other clients
                     relay.broadcast(pdf_id, payload, exclude=conn)
         except OSError as exc:
@@ -285,3 +300,105 @@ class AnnotationRoutes:
         finally:
             conn.settimeout(None)
             relay.leave(pdf_id, conn)
+
+    @staticmethod
+    def handle_image_viewer(handler, parsed_url):
+        """Serve image_viewer.html."""
+        viewer_path = Path(__file__).parent / "image_viewer.html"
+        try:
+            content = viewer_path.read_bytes()
+            handler._send_bytes(content, "text/html; charset=utf-8")
+        except OSError as exc:
+            logging.error("image_viewer.html konnte nicht geladen werden: %s", exc)
+            handler._send_html(
+                "<h1>Fehler: image_viewer.html nicht gefunden</h1>",
+                status=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+
+    @staticmethod
+    def handle_img_file(handler, parsed_url):
+        """Serve the raw image identified by base64url img_id."""
+        params = parse_qs(parsed_url.query)
+        img_id = params.get("img", [""])[0]
+        if not img_id:
+            handler._send_html("<h1>Fehlender img-Parameter</h1>", status=HTTPStatus.BAD_REQUEST)
+            return
+
+        img_path = AnnotationRoutes._decode_pdf_id(img_id)
+        if img_path is None:
+            handler._send_html("<h1>Ungültige img_id</h1>", status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if img_path.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
+            handler._send_html("<h1>Keine Bilddatei</h1>", status=HTTPStatus.BAD_REQUEST)
+            return
+
+        if not img_path.is_file():
+            handler._send_html("<h1>Bild nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
+            return
+
+        content_type = {
+            ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp",
+        }.get(img_path.suffix.lower(), "application/octet-stream")
+
+        try:
+            handler._send_bytes(img_path.read_bytes(), content_type)
+        except OSError as exc:
+            logging.error("Bild konnte nicht gelesen werden: %s", exc)
+            handler._send_html(
+                "<h1>Fehler beim Lesen der Datei</h1>",
+                status=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+
+    @staticmethod
+    def handle_img_annotation_ws(handler, parsed_url):
+        """WebSocket /ws/annotate-img?img=<id> – live image annotation sync."""
+        params = parse_qs(parsed_url.query)
+        img_id = params.get("img", [""])[0]
+        if not img_id:
+            handler.send_error(HTTPStatus.BAD_REQUEST, "Fehlender img-Parameter")
+            return
+
+        key = handler.headers.get("Sec-WebSocket-Key", "")
+        if "websocket" not in handler.headers.get("Upgrade", "").lower() or not key:
+            handler.send_error(HTTPStatus.BAD_REQUEST, "Ungültiger WebSocket-Handshake")
+            return
+
+        accept = base64.b64encode(
+            hashlib.sha1(
+                (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("utf-8")
+            ).digest()
+        ).decode("ascii")
+
+        handler.send_response(HTTPStatus.SWITCHING_PROTOCOLS)
+        handler.send_header("Upgrade", "websocket")
+        handler.send_header("Connection", "Upgrade")
+        handler.send_header("Sec-WebSocket-Accept", accept)
+        handler.end_headers()
+
+        conn = handler.connection
+        conn.settimeout(WS_TIMEOUT_SECONDS)
+        relay.join(img_id, conn)
+
+        # Send existing strokes to newly connected client
+        file_path = AnnotationRoutes._decode_pdf_id(img_id)
+        if file_path:
+            existing = load_annotations(file_path)
+            if existing.get("strokes"):
+                _ws_send_json(conn, {"type": "sync", "strokes": existing["strokes"]})
+
+        try:
+            while True:
+                opcode, payload = _ws_recv_frame(conn)
+                if opcode is None or opcode == 0x8:
+                    break
+                if opcode == 0x9:
+                    _ws_send_frame(conn, 0xA, payload)
+                if opcode == 0x1:
+                    relay.broadcast(img_id, payload, exclude=conn)
+        except OSError as exc:
+            logging.debug("Bild-Annotation WebSocket beendet: %s", exc)
+        finally:
+            conn.settimeout(None)
+            relay.leave(img_id, conn)

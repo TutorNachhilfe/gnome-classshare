@@ -68,19 +68,6 @@ Optional kann ein anderer Port gesetzt werden:
 python3 app.py --port 9090
 ```
 
-## HTTPS (empfohlen)
-
-Das Programm erkennt automatisch ob ein Let's Encrypt Zertifikat unter
-`/etc/letsencrypt/live/local.tutor.schule/` vorhanden ist und aktiviert dann HTTPS.
-
-Die Schüler-URL lautet dann: `https://local.tutor.schule:8080/`
-
-Alternativ kann ein eigener Zertifikatspfad übergeben werden:
-
-```bash
-python3 app.py --cert /pfad/zu/fullchain.pem --key /pfad/zu/privkey.pem
-```
-
 ## Ablauf
 
 1. Tutor startet die App und zeigt den QR-Code (rechts im Fenster).

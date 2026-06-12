@@ -3,15 +3,14 @@
 import json
 import logging
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Optional
 
 from gi.repository import Adw, Gdk, GLib, Gio, Gtk, Pango
 
-from constants import CONFIG_DIR, CUSTOM_ICON_DIR, CUSTOM_ICON_PATH, HTTPS_HOSTNAME, MDNS_HOSTNAME, SETTINGS_FILE, SSL_CERT_PATH, SSL_KEY_PATH
+from constants import CONFIG_DIR, CUSTOM_ICON_DIR, CUSTOM_ICON_PATH, SETTINGS_FILE
 from qr_utils import make_qr_texture
-from utils import encode_pdf_id, safe_unique_path, sanitize_filename, strip_timestamp_prefix, timestamp_prefix
+from utils import encode_file_id, safe_unique_path, sanitize_filename, strip_timestamp_prefix, timestamp_prefix
 
 
 class ClassShareWindow(Adw.ApplicationWindow):
@@ -20,6 +19,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
         self.app = app
         self.state = app.state
         self._is_fullscreen = False
+        self._loading_settings = False
 
         self.set_title("ClassShare")
         self.set_size_request(700, 520)
@@ -81,7 +81,8 @@ class ClassShareWindow(Adw.ApplicationWindow):
         qr_title_label.set_hexpand(True)
         qr_title_row.append(qr_title_label)
 
-        qr_fullscreen_btn = Gtk.Button(label="⛶ Vollbild")
+        qr_fullscreen_btn = Gtk.Button.new_from_icon_name("view-fullscreen-symbolic")
+        qr_fullscreen_btn.set_tooltip_text("QR-Code im Vollbild")
         qr_fullscreen_btn.add_css_class("flat")
         qr_fullscreen_btn.connect("clicked", self._show_qr_fullscreen)
         qr_title_row.append(qr_fullscreen_btn)
@@ -117,7 +118,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
         menu_btn.set_menu_model(menu)
         header.pack_start(menu_btn)
 
-        self._fullscreen_btn = Gtk.Button(icon_name="view-fullscreen-symbolic")
+        self._fullscreen_btn = Gtk.Button.new_from_icon_name("view-fullscreen-symbolic")
         self._fullscreen_btn.connect("clicked", self._toggle_fullscreen)
         header.pack_end(self._fullscreen_btn)
         return header
@@ -162,6 +163,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
         box.append(self.selected_count_label)
 
         file_btn = Gtk.Button(label="Datei wählen")
+        file_btn.set_icon_name("document-open-symbolic")
         file_btn.connect("clicked", self._choose_file)
         box.append(file_btn)
 
@@ -174,6 +176,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
         box.append(files_scrolled)
 
         send_btn = Gtk.Button(label="An Schüler senden")
+        send_btn.set_icon_name("document-send-symbolic")
         send_btn.add_css_class("suggested-action")
         send_btn.connect("clicked", self._send_files_to_students)
         box.append(send_btn)
@@ -242,37 +245,14 @@ class ClassShareWindow(Adw.ApplicationWindow):
         logo_row.append(logo_btn)
         box.append(logo_row)
 
-        ssl_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        ssl_label = Gtk.Label(label="HTTPS")
-        ssl_label.set_xalign(0)
-        ssl_label.set_hexpand(True)
-        ssl_row.append(ssl_label)
-        self.ssl_switch = Gtk.Switch()
-        self.ssl_switch.set_valign(Gtk.Align.CENTER)
-        self._ssl_handler_id = self.ssl_switch.connect("notify::active", self._on_ssl_switch_changed)
-        ssl_row.append(self.ssl_switch)
-        box.append(ssl_row)
-
         return frame
 
     def _on_app_name_changed(self, entry):
         name = entry.get_text().strip() or "ClassShare"
         self.state.app_name = name
         self.set_title(name)
-        self._save_settings()
-
-    def _on_ssl_switch_changed(self, switch, _param):
-        active = switch.get_active()
-        if active and not (SSL_CERT_PATH.is_file() and SSL_KEY_PATH.is_file()):
-            self.ssl_switch.handler_block(self._ssl_handler_id)
-            self.ssl_switch.set_active(False)
-            self.ssl_switch.handler_unblock(self._ssl_handler_id)
-            active = False
-            toast = Adw.Toast.new("⚠️ SSL-Zertifikat nicht gefunden – HTTP-Fallback aktiv")
-            self.toast_overlay.add_toast(toast)
-        self.state.ssl_active = active
-        self._update_qr()
-        self._save_settings()
+        if not self._loading_settings:
+            self._save_settings()
 
     def _choose_logo(self, *_):
         dialog = Gtk.FileDialog.new()
@@ -318,7 +298,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
             self._fullscreen_btn.set_icon_name("view-fullscreen-symbolic")
 
     def _show_qr_fullscreen(self, *_):
-        url = self._url_for_students() if self.state.server_port else ""
+        url = self._url_for_students()
         fullscreen_texture = make_qr_texture(url) if url else None
         if url and fullscreen_texture is None:
             self.toast_overlay.add_toast(Adw.Toast(title="qrcode nicht installiert (pip install qrcode[pil])"))
@@ -421,15 +401,18 @@ class ClassShareWindow(Adw.ApplicationWindow):
         self.state.selected_files = deduplicated
         self._refresh_selected_files_ui()
 
+    def _clear_listbox(self, listbox):
+        child = listbox.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            listbox.remove(child)
+            child = nxt
+
     def _refresh_selected_files_ui(self):
         count = len(self.state.selected_files)
         self.selected_count_label.set_text(f"{count} Datei(en) ausgewählt")
 
-        child = self.selected_files_listbox.get_first_child()
-        while child:
-            nxt = child.get_next_sibling()
-            self.selected_files_listbox.remove(child)
-            child = nxt
+        self._clear_listbox(self.selected_files_listbox)
 
         for file_path in self.state.selected_files:
             row = Gtk.ListBoxRow()
@@ -446,8 +429,9 @@ class ClassShareWindow(Adw.ApplicationWindow):
             label.set_tooltip_text(file_path)
             row_box.append(label)
 
-            remove_btn = Gtk.Button(label="✕")
+            remove_btn = Gtk.Button.new_from_icon_name("edit-delete-symbolic")
             remove_btn.add_css_class("flat")
+            remove_btn.set_tooltip_text("Entfernen")
             remove_btn.connect("clicked", self._remove_selected_file, file_path)
             row_box.append(remove_btn)
 
@@ -474,7 +458,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
                         paths.append(path)
                 if paths:
                     self._set_selected_files(paths)
-                    self.toast_overlay.add_toast(Adw.Toast(title=f"📂 {len(paths)} Datei(en) ausgewählt"))
+                    self.toast_overlay.add_toast(Adw.Toast(title=f"{len(paths)} Datei(en) ausgewählt"))
         except GLib.Error as exc:
             if self._is_dismissed_dialog_error(exc):
                 return
@@ -520,27 +504,22 @@ class ClassShareWindow(Adw.ApplicationWindow):
                     self.state.push_new_file(student, strip_timestamp_prefix(destination.name), destination.stat().st_size)
 
         self.refresh_from_state()
-        self.toast_overlay.add_toast(Adw.Toast(title=f"📤 {copied_files} Datei(en) gesendet"))
+        self.toast_overlay.add_toast(Adw.Toast(title=f"{copied_files} Datei(en) gesendet"))
 
     def _url_for_students(self) -> str:
-        if self.state.ssl_active:
-            return f"https://{HTTPS_HOSTNAME}:{self.state.server_port}/"
-        return f"http://{MDNS_HOSTNAME}:{self.state.server_port}/"
+        if not self.state.server_port:
+            return ""
+        return f"http://{self.state.server_ip}:{self.state.server_port}/"
 
-    def _annotate_url(self, pdf_id: str) -> str:
-        """Annotierungs-URL passend zum aktiven Schema (https/http) und Hostname."""
-        if self.state.ssl_active:
-            return f"https://{HTTPS_HOSTNAME}:{self.state.server_port}/annotate?pdf={pdf_id}"
-        return f"http://localhost:{self.state.server_port}/annotate?pdf={pdf_id}"
-
-    def _set_qr(self, picture, url):
-        texture = make_qr_texture(url)
-        picture.set_paintable(texture)
+    def _annotate_url_for(self, ident: str, is_pdf: bool) -> str:
+        key = "pdf" if is_pdf else "img"
+        path = "annotate" if is_pdf else "annotate-img"
+        return f"http://localhost:{self.state.server_port}/{path}?{key}={ident}"
 
     def _update_qr(self):
         if self.state.server_port:
             url = self._url_for_students()
-            self._set_qr(self.qr_picture, url)
+            self.qr_picture.set_paintable(make_qr_texture(url))
             self.ip_label.set_text(url)
             return
         self.qr_picture.set_paintable(None)
@@ -581,11 +560,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
         return exc.matches(dialog_error_quark(), dialog_error.DISMISSED)
 
     def _refresh_overview_rows(self):
-        child = self.overview_list.get_first_child()
-        while child:
-            nxt = child.get_next_sibling()
-            self.overview_list.remove(child)
-            child = nxt
+        self._clear_listbox(self.overview_list)
 
         for entry in self.state.tutor_overview_rows():
             row = Gtk.ListBoxRow()
@@ -598,7 +573,7 @@ class ClassShareWindow(Adw.ApplicationWindow):
 
             row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
 
-            dot = Gtk.Label(label="🟢" if entry["online"] else "⚪")
+            dot = Gtk.Label(label="●" if entry["online"] else "○")
             dot.set_width_chars(2)
             row_box.append(dot)
 
@@ -609,136 +584,224 @@ class ClassShareWindow(Adw.ApplicationWindow):
             row_box.append(name)
 
             received = Gtk.Label(label=str(entry["received"]))
-            received.set_xalign(0)
+            received.set_xalign(1)
             received.set_width_chars(14)
             row_box.append(received)
 
             sent = Gtk.Label(label=str(entry["sent"]))
-            sent.set_xalign(0)
+            sent.set_xalign(1)
             sent.set_width_chars(14)
             row_box.append(sent)
 
             last_active = Gtk.Label(label=entry["last_active"])
-            last_active.set_xalign(0)
+            last_active.set_xalign(1)
             last_active.set_width_chars(18)
             row_box.append(last_active)
 
+            rename_btn = Gtk.Button.new_from_icon_name("document-edit-symbolic")
+            rename_btn.add_css_class("flat")
+            rename_btn.set_tooltip_text("Umbenennen")
+            rename_btn.connect("clicked", lambda _b, n=entry["name"]: self._rename_student_dialog(n))
+            row_box.append(rename_btn)
+
+            del_btn = Gtk.Button.new_from_icon_name("edit-delete-symbolic")
+            del_btn.add_css_class("flat")
+            del_btn.set_tooltip_text("Schüler löschen")
+            del_btn.connect("clicked", lambda _b, n=entry["name"]: self._delete_student_confirm(n))
+            row_box.append(del_btn)
+
             outer_box.append(row_box)
 
-            def build_files_expander(files, label_prefix: str, singular: str, plural: str):
-                if not files:
-                    return None
-                expander = Gtk.Expander(label=f"{label_prefix} {len(files)} {singular if len(files) == 1 else plural}")
-                files_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-                files_box.set_margin_top(4)
-                files_box.set_margin_start(8)
-                for f in files:
-                    file_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                    file_row.set_margin_top(2)
-                    file_row.set_margin_bottom(2)
-
-                    fname_label = Gtk.Label(label=f["filename"])
-                    fname_label.set_xalign(0)
-                    fname_label.set_hexpand(True)
-                    fname_label.set_ellipsize(Pango.EllipsizeMode.END)
-                    fname_label.set_tooltip_text(f["path"])
-                    file_row.append(fname_label)
-
-                    view_btn = Gtk.Button(label="Anzeigen")
-                    view_btn.add_css_class("flat")
-                    view_btn.connect("clicked", self._open_file, f["path"])
-                    file_row.append(view_btn)
-
-                    if f["filename"].lower().endswith(".pdf") and self.state.server_port:
-                        pdf_id = f.get("pdf_id") or encode_pdf_id(f.get("download") or f["path"])
-                        ann_url = self._annotate_url(pdf_id)
-                        ann_btn = Gtk.Button(label="📝 Annotieren")
-                        ann_btn.add_css_class("flat")
-                        ann_btn.connect("clicked", self._open_url, ann_url)
-                        file_row.append(ann_btn)
-
-                    dl_btn = Gtk.Button(label="Herunterladen")
-                    dl_btn.add_css_class("flat")
-                    dl_btn.connect("clicked", self._open_folder, f["folder"])
-                    file_row.append(dl_btn)
-
-                    files_box.append(file_row)
-                expander.set_child(files_box)
-                return expander
-
             received_files = entry.get("received_files", [])
-            received_expander = build_files_expander(received_files, "📥", "Datei empfangen", "Dateien empfangen")
+            received_expander = self._build_files_expander(received_files, entry["name"], "Erhalten:", "Datei empfangen", "Dateien empfangen")
             if received_expander:
                 outer_box.append(received_expander)
 
             sent_files = entry.get("sent_files", [])
-            sent_expander = build_files_expander(sent_files, "📨", "Datei eingereicht", "Dateien eingereicht")
+            sent_expander = self._build_files_expander(sent_files, entry["name"], "Gesendet:", "Datei eingereicht", "Dateien eingereicht")
             if sent_expander:
                 outer_box.append(sent_expander)
 
             row.set_child(outer_box)
             self.overview_list.append(row)
 
-    def _open_file(self, _btn, path: str):
+    def _build_files_expander(self, files, student_name: str, label_prefix: str, singular: str, plural: str):
+        if not files:
+            return None
+        expander = Gtk.Expander(label=f"{label_prefix} {len(files)} {singular if len(files) == 1 else plural}")
+        files_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        files_box.set_margin_top(4)
+        files_box.set_margin_start(8)
+        for f in files:
+            file_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            file_row.set_margin_top(2)
+            file_row.set_margin_bottom(2)
+
+            fname_label = Gtk.Label(label=f["filename"])
+            fname_label.set_xalign(0)
+            fname_label.set_hexpand(True)
+            fname_label.set_width_chars(20)
+            fname_label.set_ellipsize(Pango.EllipsizeMode.END)
+            fname_label.set_tooltip_text(f["path"])
+            file_row.append(fname_label)
+
+            view_btn = Gtk.Button.new_from_icon_name("document-open-symbolic")
+            view_btn.add_css_class("flat")
+            view_btn.set_tooltip_text("Anzeigen")
+            view_btn.connect("clicked", lambda _b, p=f["path"]: self._launch_file(p))
+            file_row.append(view_btn)
+
+            if self.state.server_port:
+                fname_lower = f["filename"].lower()
+                for exts, is_pdf, tip in (
+                    ((".pdf",), True, "PDF annotieren"),
+                    ((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"), False, "Bild annotieren"),
+                ):
+                    if fname_lower.endswith(exts):
+                        ident = f.get("file_id") or encode_file_id(f.get("download") or f["path"])
+                        ann_btn = Gtk.Button.new_from_icon_name("document-edit-symbolic")
+                        ann_btn.add_css_class("flat")
+                        ann_btn.set_tooltip_text(tip)
+                        ann_url = self._annotate_url_for(ident, is_pdf)
+                        ann_btn.connect("clicked", lambda _b, u=ann_url: self._launch_uri(u))
+                        file_row.append(ann_btn)
+                        break
+
+            dl_btn = Gtk.Button.new_from_icon_name("document-save-symbolic")
+            dl_btn.add_css_class("flat")
+            dl_btn.set_tooltip_text("Ordner öffnen")
+            dl_btn.connect("clicked", lambda _b, d=f["folder"]: self._launch_file(d))
+            file_row.append(dl_btn)
+
+            del_btn = Gtk.Button.new_from_icon_name("edit-delete-symbolic")
+            del_btn.add_css_class("flat")
+            del_btn.set_tooltip_text("Datei löschen")
+            del_btn.connect("clicked", lambda _b, p=f["path"], n=student_name: self._delete_student_file(p, n))
+            file_row.append(del_btn)
+
+            files_box.append(file_row)
+        expander.set_child(files_box)
+        return expander
+
+    def _rename_student_dialog(self, old_name: str):
         try:
-            subprocess.Popen(["xdg-open", path])
+            dialog = Gtk.AlertDialog()
+            dialog.set_message(f"„{old_name}“ umbenennen")
+            dialog.set_detail("Neuen Namen eingeben")
+            dialog.set_buttons(["Abbrechen", "Umbenennen"])
+            dialog.set_cancel_button(0)
+            dialog.set_default_button(1)
+
+            entry = Gtk.Entry()
+            entry.set_text(old_name)
+            entry.set_placeholder_text("Neuer Name")
+            entry.set_activates_default(True)
+            dialog.set_extra_child(entry)
+
+            def on_response(dialog, result):
+                try:
+                    idx = dialog.choose_finish(result)
+                    if idx == 1:
+                        new_name = entry.get_text().strip()
+                        if new_name and new_name != old_name:
+                            with self.state.lock:
+                                error = self.state.rename_student(old_name, new_name)
+                            if error:
+                                self.toast_overlay.add_toast(Adw.Toast(title=error))
+                            else:
+                                self.toast_overlay.add_toast(Adw.Toast(title=f"Umbenannt: {old_name} → {new_name}"))
+                                self.refresh_from_state()
+                    entry.unparent()
+                except GLib.Error:
+                    pass
+            dialog.choose(self, None, on_response)
+        except AttributeError:
+            pass
+
+    def _delete_student_confirm(self, name: str):
+        try:
+            dialog = Gtk.AlertDialog()
+            dialog.set_message(f"„{name}“ löschen?")
+            dialog.set_detail("Alle Dateien dieses Schülers werden unwiderruflich gelöscht.")
+            dialog.set_buttons(["Abbrechen", "Löschen"])
+            dialog.set_cancel_button(0)
+            dialog.set_default_button(0)
+
+            def on_response(dialog, result):
+                try:
+                    idx = dialog.choose_finish(result)
+                    if idx == 1:
+                        with self.state.lock:
+                            error = self.state.delete_student(name)
+                        if error:
+                            self.toast_overlay.add_toast(Adw.Toast(title=error))
+                        else:
+                            self.toast_overlay.add_toast(Adw.Toast(title=f"Schüler gelöscht: {name}"))
+                            self.refresh_from_state()
+                except GLib.Error:
+                    pass
+            dialog.choose(self, None, on_response)
+        except AttributeError:
+            pass
+
+    def _launch_file(self, path: str):
+        try:
+            Gtk.FileLauncher(file=Gio.File.new_for_path(path)).launch(self)
         except Exception as exc:
             logging.warning("Datei konnte nicht geöffnet werden (%s): %s", path, exc)
-            self.toast_overlay.add_toast(Adw.Toast(title=f"Konnte Datei nicht öffnen: {Path(path).name}"))
+            self.toast_overlay.add_toast(Adw.Toast(title=f"Konnte nicht öffnen: {Path(path).name}"))
 
-    def _open_url(self, _btn, url: str):
+    def _launch_uri(self, uri: str):
         try:
-            subprocess.Popen(["xdg-open", url])
+            Gtk.UriLauncher(uri=uri).launch(self)
         except Exception as exc:
-            logging.warning("URL konnte nicht geöffnet werden (%s): %s", url, exc)
+            logging.warning("URL konnte nicht geöffnet werden (%s): %s", uri, exc)
             self.toast_overlay.add_toast(Adw.Toast(title="Konnte URL nicht öffnen"))
 
-    def _open_folder(self, _btn, folder: str):
+    def _delete_student_file(self, file_path: str, student_name: str):
         try:
-            subprocess.Popen(["xdg-open", folder])
-        except Exception as exc:
-            logging.warning("Ordner konnte nicht geöffnet werden (%s): %s", folder, exc)
-            self.toast_overlay.add_toast(Adw.Toast(title="Konnte Ordner nicht öffnen"))
+            Path(file_path).unlink(missing_ok=True)
+        except OSError as exc:
+            logging.warning("Datei konnte nicht gelöscht werden: %s", exc)
+            self.toast_overlay.add_toast(Adw.Toast(title="Konnte Datei nicht löschen"))
+            return
+        with self.state.lock:
+            self.state.push_file_list(student_name)
+        self.refresh_from_state()
+        self.toast_overlay.add_toast(Adw.Toast(title="Datei gelöscht"))
 
     def on_student_upload(self, student: str, filename: str, _size: int):
-        self.toast_overlay.add_toast(Adw.Toast(title=f"📥 {student}: {filename}"))
+        self.toast_overlay.add_toast(Adw.Toast(title=f"{student}: {filename}"))
         self.refresh_from_state()
         return False
 
     def _load_settings(self):
+        self._loading_settings = True
         try:
-            if SETTINGS_FILE.exists():
-                data = json.loads(SETTINGS_FILE.read_text())
-                self.set_default_size(data.get("width", 900), data.get("height", 740))
-                app_name = data.get("app_name", "ClassShare") or "ClassShare"
-                self.state.app_name = app_name
-                self.app_name_entry.set_text(app_name)
-                self.set_title(app_name)
-                # Prefer persistent custom icon; fall back to settings-stored path
-                if CUSTOM_ICON_PATH.is_file():
-                    logo_path = str(CUSTOM_ICON_PATH)
-                else:
-                    logo_path = data.get("logo_path")
-                if logo_path and Path(logo_path).is_file():
-                    self.state.logo_path = logo_path
-                    self.logo_path_label.set_text(Path(logo_path).name)
-                ssl_active = data.get("ssl_active", self.state.ssl_active)
-                self.state.ssl_active = ssl_active
-                self.ssl_switch.handler_block(self._ssl_handler_id)
-                self.ssl_switch.set_active(ssl_active)
-                self.ssl_switch.handler_unblock(self._ssl_handler_id)
-                return
-        except Exception as exc:
-            logging.warning("Einstellungen konnten nicht geladen werden: %s", exc)
-        # No settings file: still check for a persistent custom icon
-        if CUSTOM_ICON_PATH.is_file():
-            self.state.logo_path = str(CUSTOM_ICON_PATH)
-            self.logo_path_label.set_text(CUSTOM_ICON_PATH.name)
-        self.set_default_size(900, 740)
-        # Set switch to match current server-detected ssl_active state
-        self.ssl_switch.handler_block(self._ssl_handler_id)
-        self.ssl_switch.set_active(self.state.ssl_active)
-        self.ssl_switch.handler_unblock(self._ssl_handler_id)
+            try:
+                if SETTINGS_FILE.exists():
+                    data = json.loads(SETTINGS_FILE.read_text())
+                    self.set_default_size(data.get("width", 900), data.get("height", 740))
+                    app_name = data.get("app_name", "ClassShare") or "ClassShare"
+                    self.state.app_name = app_name
+                    self.app_name_entry.set_text(app_name)
+                    self.set_title(app_name)
+                    if CUSTOM_ICON_PATH.is_file():
+                        logo_path = str(CUSTOM_ICON_PATH)
+                    else:
+                        logo_path = data.get("logo_path")
+                    if logo_path and Path(logo_path).is_file():
+                        self.state.logo_path = logo_path
+                        self.logo_path_label.set_text(Path(logo_path).name)
+                    return
+            except Exception as exc:
+                logging.warning("Einstellungen konnten nicht geladen werden: %s", exc)
+            if CUSTOM_ICON_PATH.is_file():
+                self.state.logo_path = str(CUSTOM_ICON_PATH)
+                self.logo_path_label.set_text(CUSTOM_ICON_PATH.name)
+            self.set_default_size(900, 740)
+        finally:
+            self._loading_settings = False
 
     def _save_settings(self):
         try:
@@ -748,7 +811,6 @@ class ClassShareWindow(Adw.ApplicationWindow):
                 "height": self.get_height(),
                 "app_name": self.state.app_name,
                 "logo_path": self.state.logo_path,
-                "ssl_active": self.state.ssl_active,
             }
             SETTINGS_FILE.write_text(json.dumps(data))
         except Exception as exc:

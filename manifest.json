@@ -1,0 +1,10 @@
+{
+  "name": "ClassShare",
+  "short_name": "ClassShare",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f0f2f5",
+  "theme_color": "#4b5563",
+  "description": "Dateien mit dem Tutor austauschen",
+  "icons": []
+}

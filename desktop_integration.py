@@ -34,7 +34,7 @@ def ensure_desktop_file(app_desktop_id: str) -> None:
         desktop_dir.mkdir(parents=True, exist_ok=True)
         desktop_path = desktop_dir / app_desktop_id
         if not desktop_path.exists():
-            exec_path = Path(sys.argv[0]).resolve()
+            exec_path = Path(__file__).parent / "app.py"
             desktop_path.write_text(
                 "[Desktop Entry]\n"
                 "Name=ClassShare\n"

@@ -27,7 +27,7 @@ def format_size(size_bytes: int) -> str:
     return f"{size_bytes / (1024 * 1024):.1f} MB"
 
 
-def encode_pdf_id(value: str) -> str:
+def encode_file_id(value: str) -> str:
     return base64.urlsafe_b64encode(value.encode("utf-8")).rstrip(b"=").decode("ascii")
 
 

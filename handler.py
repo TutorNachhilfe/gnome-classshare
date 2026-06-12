@@ -13,7 +13,8 @@ from typing import Callable, Optional
 from urllib.parse import ParseResult, parse_qs, quote, urlparse
 
 from constants import CONTENT_TOO_LARGE, MAX_UPLOAD_SIZE_BYTES, WS_TIMEOUT_SECONDS
-from state import _ws_recv_frame, _ws_send_json
+from pdf_annotate.routes import AnnotationRoutes
+from state import _ws_recv_frame, _ws_send_frame, _ws_send_json
 from utils import (
     safe_unique_path,
     sanitize_filename,
@@ -94,7 +95,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             self._handle_root()
             return
         if parsed.path == "/api/files":
-            self._handle_file_list_api()
+            self._handle_file_list_api(parsed)
             return
         if parsed.path == "/download":
             self._handle_download(parsed)
@@ -106,51 +107,59 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             self._handle_logo()
             return
         if parsed.path == "/ws":
-            self._handle_websocket()
+            self._handle_websocket(parsed)
             return
         if parsed.path == "/annotate":
-            from pdf_annotate.routes import AnnotationRoutes
             AnnotationRoutes.handle_pdf_viewer(self, parsed)
             return
         if parsed.path == "/pdf-js/pdf.min.js":
-            from pdf_annotate.routes import AnnotationRoutes
             AnnotationRoutes.handle_pdfjs_main(self, parsed)
             return
         if parsed.path == "/pdf-js/pdf.worker.min.js":
-            from pdf_annotate.routes import AnnotationRoutes
             AnnotationRoutes.handle_pdfjs_worker(self, parsed)
             return
         if parsed.path == "/pdf-file":
-            from pdf_annotate.routes import AnnotationRoutes
             AnnotationRoutes.handle_pdf_file(self, parsed)
             return
         if parsed.path == "/api/annotations":
-            from pdf_annotate.routes import AnnotationRoutes
             AnnotationRoutes.handle_annotations_get(self, parsed)
             return
         if parsed.path == "/ws/annotate":
-            from pdf_annotate.routes import AnnotationRoutes
             AnnotationRoutes.handle_annotation_ws(self, parsed)
+            return
+        if parsed.path == "/annotate-img":
+            AnnotationRoutes.handle_image_viewer(self, parsed)
+            return
+        if parsed.path == "/img-file":
+            AnnotationRoutes.handle_img_file(self, parsed)
+            return
+        if parsed.path == "/ws/annotate-img":
+            AnnotationRoutes.handle_img_annotation_ws(self, parsed)
+            return
+        if parsed.path == "/manifest.json":
+            self._handle_static_file("manifest.json", "application/json")
+            return
+        if parsed.path == "/sw.js":
+            self._handle_static_file("sw.js", "text/javascript")
             return
         self._send_html("<h1>Nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
 
     def do_POST(self):
-        path = urlparse(self.path).path
-        if path == "/api/login":
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/login":
             self._handle_api_login()
             return
-        if path == "/upload":
-            self._handle_upload()
+        if parsed.path == "/upload":
+            self._handle_upload(parsed)
             return
-        if path == "/api/annotations":
-            from pdf_annotate.routes import AnnotationRoutes
-            parsed_url = urlparse(self.path)
-            AnnotationRoutes.handle_annotations_post(self, parsed_url)
+        if parsed.path == "/api/annotations":
+            AnnotationRoutes.handle_annotations_post(self, parsed)
             return
-        if path == "/api/annotations/bake":
-            from pdf_annotate.routes import AnnotationRoutes
-            parsed_url = urlparse(self.path)
-            AnnotationRoutes.handle_annotations_bake(self, parsed_url)
+        if parsed.path == "/api/annotations/bake":
+            AnnotationRoutes.handle_annotations_bake(self, parsed)
+            return
+        if parsed.path == "/delete":
+            self._handle_delete(parsed)
             return
         self._send_html("<h1>Nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
 
@@ -173,12 +182,23 @@ class ClassShareHandler(BaseHTTPRequestHandler):
             return
         self._send_bytes(path.read_bytes(), allowed[suffix])
 
+    def _handle_static_file(self, filename: str, content_type: str):
+        try:
+            path = Path(__file__).parent / filename
+            if not path.is_file():
+                self._send_html("<h1>Nicht gefunden</h1>", status=HTTPStatus.NOT_FOUND)
+                return
+            self._send_bytes(path.read_bytes(), content_type)
+        except OSError as exc:
+            logging.error("%s konnte nicht geladen werden: %s", filename, exc)
+            self._send_html("<h1>Fehler beim Laden</h1>", status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
     def _render_app_page(self):
         app_name = escape(self.state.app_name or "ClassShare")
         if self.state.logo_path:
             brand_html = f'<img src="/logo" alt="{app_name}" class="logo" onerror="this.onerror=null;this.style.display=\'none\'"> {app_name}'
         else:
-            brand_html = f'&#x1F4DA; {app_name}'
+            brand_html = f'<i class="ph-bold ph-chalkboard-teacher"></i> {app_name}'
         if ClassShareHandler._student_html_template is None:
             try:
                 ClassShareHandler._student_html_template = (Path(__file__).parent / "student.html").read_text(encoding="utf-8")
@@ -215,8 +235,8 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         self._notify_state_change()
         self._send_json({"ok": True, "name": canonical})
 
-    def _handle_file_list_api(self):
-        student_name = self._name_from_query(urlparse(self.path).query)
+    def _handle_file_list_api(self, parsed):
+        student_name = self._name_from_query(parsed.query)
         if not student_name:
             self._send_json({"error": "Unbekannter oder fehlender Name"}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -290,8 +310,8 @@ class ClassShareHandler(BaseHTTPRequestHandler):
         content_type = self._CONTENT_TYPE_MAP.get(file_path.suffix.lower(), "application/octet-stream")
         self._send_bytes(data, content_type, content_disposition=self._make_disposition("inline", display_name))
 
-    def _handle_upload(self):
-        student_name = self._name_from_query(urlparse(self.path).query)
+    def _handle_upload(self, parsed):
+        student_name = self._name_from_query(parsed.query)
         if not student_name:
             self._send_json({"error": "Unbekannter oder fehlender Name"}, status=HTTPStatus.FORBIDDEN)
             return
@@ -357,8 +377,41 @@ class ClassShareHandler(BaseHTTPRequestHandler):
 
         self._send_json({"ok": True, "saved": saved})
 
-    def _handle_websocket(self):
-        student_name = self._name_from_query(urlparse(self.path).query)
+    def _handle_delete(self, parsed):
+        student_name = self._name_from_query(parsed.query)
+        if not student_name:
+            self._send_json({"error": "Nicht erlaubt"}, status=HTTPStatus.FORBIDDEN)
+            return
+
+        params = parse_qs(parsed.query)
+        scope = params.get("scope", [""])[0]
+        requested = params.get("file", [""])[0]
+
+        if not requested or requested != Path(requested).name or scope not in ("received", "sent"):
+            self._send_json({"error": "Ungültige Anfrage"}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        _, received_dir, sent_dir = self.state.student_paths(student_name)
+        directory = received_dir if scope == "received" else sent_dir
+        file_path = directory / requested
+        if not file_path.is_file():
+            self._send_json({"error": "Datei nicht gefunden"}, status=HTTPStatus.NOT_FOUND)
+            return
+
+        try:
+            file_path.unlink()
+        except OSError:
+            self._send_json({"error": "Datei konnte nicht gelöscht werden"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        with self.state.lock:
+            self.state.touch_active(student_name)
+            self.state.push_file_list(student_name)
+        self._notify_state_change()
+        self._send_json({"ok": True})
+
+    def _handle_websocket(self, parsed):
+        student_name = self._name_from_query(parsed.query)
         if not student_name:
             self.send_error(HTTPStatus.FORBIDDEN, "Nicht erlaubt")
             return
@@ -393,8 +446,7 @@ class ClassShareHandler(BaseHTTPRequestHandler):
                 if opcode == 0x8:
                     break
                 if opcode == 0x9:
-                    pong = bytes([0x8A, len(payload)]) + payload
-                    self.connection.sendall(pong)
+                    _ws_send_frame(self.connection, 0xA, payload)
                 if opcode == 0x1:
                     try:
                         data = json.loads(payload.decode("utf-8"))

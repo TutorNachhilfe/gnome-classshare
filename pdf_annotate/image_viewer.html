@@ -6,7 +6,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="theme-color" content="#4b5563">
-  <title>PDF Annotieren</title>
+  <title>Bild Annotieren</title>
   <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/bold/style.css">
   <style>
     :root {
@@ -19,7 +19,6 @@
       --accent: #1a73e8;
       --danger: #d93025;
       --shadow: 0 1px 3px rgba(0,0,0,.12), 0 1px 2px rgba(0,0,0,.08);
-      --page-shadow: 0 2px 12px rgba(0,0,0,.15);
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -32,7 +31,6 @@
         --accent: #8ab4f8;
         --danger: #f28b82;
         --shadow: 0 1px 3px rgba(0,0,0,.4);
-        --page-shadow: 0 2px 16px rgba(0,0,0,.5);
       }
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -42,10 +40,13 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       -webkit-tap-highlight-color: transparent;
       overscroll-behavior: none;
+      display: flex;
+      flex-direction: column;
+      height: 100dvh;
+      overflow: hidden;
     }
+
     #toolbar {
-      position: fixed;
-      top: 0; left: 0; right: 0;
       background: var(--toolbar-bg);
       display: flex;
       align-items: center;
@@ -55,6 +56,7 @@
       z-index: 100;
       box-shadow: var(--shadow);
       border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
     }
     #toolbar .sep {
       width: 1px; height: 28px;
@@ -94,10 +96,6 @@
     #toolbar button.danger:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
     #toolbar button.save { background: var(--accent); color: #fff; border-color: var(--accent); }
     #toolbar button.save:hover { opacity: .9; }
-    #page-counter {
-      font-size: 12px; color: var(--text-secondary);
-      white-space: nowrap; margin: 0 6px;
-    }
     #stroke-widths {
       display: flex; align-items: center; gap: 2px;
     }
@@ -119,28 +117,28 @@
     }
     #status .dot.online { background: #34a853; }
     #status .dot.offline { background: var(--danger); }
-    #pages {
-      margin-top: 52px;
+
+    #viewport {
+      flex: 1;
+      overflow: auto;
       display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 8px 12px 24px;
-      gap: 16px;
+      align-items: flex-start; justify-content: center;
+      padding: 12px;
     }
-    .page-wrap {
+    .img-wrap {
       position: relative;
-      max-width: 900px;
-      width: 100%;
-      box-shadow: var(--page-shadow);
+      display: inline-block;
+      box-shadow: 0 2px 16px rgba(0,0,0,.2);
       border-radius: 4px;
       overflow: hidden;
-      background: var(--surface);
+      line-height: 0;
     }
-    .pdf-canvas {
+    #image {
       display: block;
-      width: 100%;
+      max-width: min(900px, calc(100vw - 24px));
+      height: auto;
     }
-    .ann-canvas {
+    #ann-canvas {
       position: absolute;
       top: 0; left: 0;
       width: 100%; height: 100%;
@@ -169,7 +167,6 @@
       #toolbar { gap: 3px; padding: 6px 8px; }
       #toolbar button { padding: 5px 8px; font-size: 12px; }
       #toolbar .sep { margin: 0 2px; }
-      #pages { margin-top: 48px; padding: 6px 8px 20px; }
     }
   </style>
 </head>
@@ -190,30 +187,31 @@
     <button id="btnUndo"><i class="ph-bold ph-arrow-counter-clockwise"></i></button>
     <button id="btnClear" class="danger"><i class="ph-bold ph-trash"></i></button>
     <button id="btnSave" class="save"><i class="ph-bold ph-floppy-disk"></i> Speichern</button>
-    <span id="page-counter"></span>
     <span id="status">
       <span class="dot offline"></span>
       <span id="statusText">Verbinde…</span>
     </span>
   </div>
 
-  <div id="pages"></div>
+  <div id="viewport">
+    <div class="img-wrap">
+      <img id="image" alt="">
+      <canvas id="ann-canvas"></canvas>
+    </div>
+  </div>
   <div id="toast"></div>
 
-  <script src="/pdf-js/pdf.min.js"></script>
-  <script src="https://unpkg.com/pdf-lib/dist/pdf-lib.min.js"></script>
   <script>
     'use strict';
 
     var params = new URLSearchParams(location.search);
-    var pdfId  = params.get('pdf') || '';
-    var pdfUrl = '/pdf-file?pdf=' + encodeURIComponent(pdfId);
+    var imgId  = params.get('img') || '';
+    var imgUrl = '/img-file?img=' + encodeURIComponent(imgId);
 
     var strokes = [];
     var currentStroke = null;
     var tool = 'none';
     var wsConn = null;
-    var pages = [];
 
     var colorPicker = document.getElementById('colorPicker');
     var btnPen      = document.getElementById('btnPen');
@@ -221,10 +219,12 @@
     var btnSave     = document.getElementById('btnSave');
     var statusText  = document.getElementById('statusText');
     var statusDot   = document.querySelector('#status .dot');
-    var pageCounter = document.getElementById('page-counter');
     var toastEl     = document.getElementById('toast');
     var strokeWidth = 4;
     var widthBtns   = document.querySelectorAll('#stroke-widths button');
+    var annCanvas   = document.getElementById('ann-canvas');
+    var ctx         = annCanvas.getContext('2d');
+    var imageEl     = document.getElementById('image');
 
     function setStatus(msg, online) {
       statusText.textContent = msg;
@@ -238,15 +238,6 @@
       clearTimeout(toastTimer);
       toastTimer = setTimeout(function() { toastEl.classList.remove('show'); }, 2800);
     }
-
-    if (typeof pdfjsLib === 'undefined') {
-      setStatus('PDF.js nicht geladen');
-      document.getElementById('pages').innerHTML =
-        '<div style="padding:3rem 1rem;text-align:center;color:var(--text-secondary)">' +
-        '<h2>PDF.js nicht verfügbar</h2>' +
-        '<p style="margin-top:.5rem">Installiere das Paket: <code>sudo pacman -S pdfjs</code></p>' +
-        '</div>';
-    } else {
 
     // ── Tool selection ──────────────────────────────────────────────────────
     btnPen.addEventListener('click', function() {
@@ -263,10 +254,8 @@
       btnPen.classList.toggle('active', tool === 'pen');
       btnEraser.classList.toggle('active', tool === 'eraser');
       var active = (tool === 'pen' || tool === 'eraser');
-      pages.forEach(function(p) {
-        p.annCanvas.style.pointerEvents = active ? 'auto' : 'none';
-        p.annCanvas.style.touchAction = active ? 'none' : 'pan-y pinch-zoom';
-      });
+      annCanvas.style.pointerEvents = active ? 'auto' : 'none';
+      annCanvas.style.touchAction = active ? 'none' : 'pan-x pan-y pinch-zoom';
     }
 
     setTool('pen');
@@ -298,161 +287,111 @@
       showToast('Alles gelöscht');
     });
 
-    btnSave.addEventListener('click', async function() {
-      if (typeof PDFLib === 'undefined' || !pages.length) {
-        showToast('PDF-Export nicht verfügbar');
-        return;
-      }
-      try {
-        setStatus('Exportiere PDF…', false);
-        var pdfBytes = await fetch(pdfUrl).then(function(r) { return r.arrayBuffer(); });
-        var pdfDoc = await PDFLib.PDFDocument.load(pdfBytes);
-
-        for (var i = 0; i < pdfDoc.getPageCount() && i < pages.length; i++) {
-          var canvas = pages[i].annCanvas;
-          var pngDataUrl = canvas.toDataURL('image/png');
-          var pngBytes = await fetch(pngDataUrl).then(function(r) { return r.arrayBuffer(); });
-          var pngImage = await pdfDoc.embedPng(pngBytes);
-          var page = pdfDoc.getPage(i);
-          var size = page.getSize();
-          page.drawImage(pngImage, { x: 0, y: 0, width: size.width, height: size.height });
-        }
-
-        var savedBytes = await pdfDoc.save();
-        var blob = new Blob([savedBytes], { type: 'application/pdf' });
-        var a = document.createElement('a');
-        var url = URL.createObjectURL(blob);
-        a.href = url;
-        a.download = 'annotiert.pdf';
-        a.click();
-        URL.revokeObjectURL(url);
-
-        try {
-          setStatus('Speichere auf Server…', false);
-          var resp = await fetch('/api/annotations/bake?pdf=' + encodeURIComponent(pdfId), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/pdf' },
-            body: savedBytes,
-          });
-          if (resp.ok) {
-            setStatus('PDF gespeichert', true);
-            showToast('PDF gespeichert');
-          } else {
-            setStatus('Server-Upload fehlgeschlagen', true);
-            showToast('Lokal gespeichert, Server nicht erreichbar');
-          }
-        } catch (err) {
-          setStatus('Lokal gespeichert', true);
-          showToast('Lokal gespeichert, Server nicht erreichbar');
-        }
-      } catch (err) {
-        console.error('PDF export failed:', err);
-        setStatus('Export fehlgeschlagen', true);
-        showToast('PDF-Export fehlgeschlagen');
-      }
+    btnSave.addEventListener('click', function() {
+      if (!annCanvas.width) return;
+      var link = document.createElement('a');
+      link.download = 'annotiert.png';
+      link.href = annCanvas.toDataURL('image/png');
+      link.click();
+      showToast('Bild gespeichert');
     });
 
-    // ── Drawing (mouse + touch) ─────────────────────────────────────────────
-    function attachPointer(annCanvas, pageIndex) {
-      var drawing = false;
+    // ── Drawing ─────────────────────────────────────────────────────────────
+    var drawing = false;
 
-      function down(e) {
-        if (tool === 'none') return;
-        drawing = true;
-        annCanvas.setPointerCapture(e.pointerId);
-        var pt = canvasPt(annCanvas, e);
-        if (tool === 'pen') {
-          currentStroke = {
-            color: colorPicker.value,
-            width: strokeWidth,
-            points: [pt],
-            pageIndex: pageIndex,
-          };
-        } else {
-          eraseAt(pageIndex, pt);
-        }
-      }
-
-      function move(e) {
-        if (!drawing) return;
-        var events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
-        for (var j = 0; j < events.length; j++) {
-          var ev = events[j];
-          var pt = canvasPt(annCanvas, ev);
-          if (tool === 'pen' && currentStroke) {
-            currentStroke.points.push(pt);
-            var pg = pages[pageIndex];
-            var pts = currentStroke.points;
-            if (pts.length >= 2) {
-              pg.ctx.beginPath();
-              pg.ctx.strokeStyle = currentStroke.color;
-              pg.ctx.lineWidth   = currentStroke.width;
-              pg.ctx.lineCap     = 'round';
-              pg.ctx.lineJoin    = 'round';
-              pg.ctx.moveTo(pts[pts.length - 2][0], pts[pts.length - 2][1]);
-              pg.ctx.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
-              pg.ctx.stroke();
-            }
-          } else if (tool === 'eraser') {
-            eraseAt(pageIndex, pt);
-          }
-        }
-      }
-
-      function up(e) {
-        if (!drawing) return;
-        drawing = false;
-        if (tool === 'pen' && currentStroke && currentStroke.points.length >= 2) {
-          strokes.push(currentStroke);
-          wsSend({ type: 'stroke', stroke: currentStroke });
-          saveAnnotations();
-        } else if (tool === 'eraser') {
-          wsSend({ type: 'sync', strokes: strokes });
-          saveAnnotations();
-        }
-        currentStroke = null;
-      }
-
-      function cancel(e) {
-        if (!drawing) return;
-        drawing = false;
-        if (tool === 'pen' && currentStroke && currentStroke.points.length >= 2) {
-          strokes.push(currentStroke);
-          wsSend({ type: 'stroke', stroke: currentStroke });
-          saveAnnotations();
-        }
-        currentStroke = null;
-        annCanvas.releasePointerCapture(e.pointerId);
-      }
-
-      annCanvas.addEventListener('pointerdown', down);
-      annCanvas.addEventListener('pointermove', move);
-      annCanvas.addEventListener('pointerup', up);
-      annCanvas.addEventListener('pointercancel', cancel);
-    }
-
-    function canvasPt(canvas, e) {
-      var r  = canvas.getBoundingClientRect();
-      var sx = canvas.width  / r.width;
-      var sy = canvas.height / r.height;
+    function canvasPt(e) {
+      var r  = annCanvas.getBoundingClientRect();
+      var sx = annCanvas.width  / r.width;
+      var sy = annCanvas.height / r.height;
       return [(e.clientX - r.left) * sx, (e.clientY - r.top) * sy];
     }
 
-    function eraseAt(pageIndex, pt) {
+    function down(e) {
+      if (tool === 'none') return;
+      drawing = true;
+      annCanvas.setPointerCapture(e.pointerId);
+      var pt = canvasPt(e);
+      if (tool === 'pen') {
+        currentStroke = {
+          color: colorPicker.value,
+          width: strokeWidth,
+          points: [pt],
+        };
+      } else {
+        eraseAt(pt);
+      }
+    }
+
+    function move(e) {
+      if (!drawing) return;
+      var events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+      for (var j = 0; j < events.length; j++) {
+        var ev = events[j];
+        var pt = canvasPt(ev);
+        if (tool === 'pen' && currentStroke) {
+          currentStroke.points.push(pt);
+          var pts = currentStroke.points;
+          if (pts.length >= 2) {
+            ctx.beginPath();
+            ctx.strokeStyle = currentStroke.color;
+            ctx.lineWidth   = currentStroke.width;
+            ctx.lineCap     = 'round';
+            ctx.lineJoin    = 'round';
+            ctx.moveTo(pts[pts.length - 2][0], pts[pts.length - 2][1]);
+            ctx.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
+            ctx.stroke();
+          }
+        } else if (tool === 'eraser') {
+          eraseAt(pt);
+        }
+      }
+    }
+
+    function up(e) {
+      if (!drawing) return;
+      drawing = false;
+      if (tool === 'pen' && currentStroke && currentStroke.points.length >= 2) {
+        strokes.push(currentStroke);
+        wsSend({ type: 'stroke', stroke: currentStroke });
+        saveAnnotations();
+      } else if (tool === 'eraser') {
+        wsSend({ type: 'sync', strokes: strokes });
+        saveAnnotations();
+      }
+      currentStroke = null;
+    }
+
+    function cancel(e) {
+      if (!drawing) return;
+      drawing = false;
+      if (tool === 'pen' && currentStroke && currentStroke.points.length >= 2) {
+        strokes.push(currentStroke);
+        wsSend({ type: 'stroke', stroke: currentStroke });
+        saveAnnotations();
+      }
+      currentStroke = null;
+      annCanvas.releasePointerCapture(e.pointerId);
+    }
+
+    annCanvas.addEventListener('pointerdown', down);
+    annCanvas.addEventListener('pointermove', move);
+    annCanvas.addEventListener('pointerup', up);
+    annCanvas.addEventListener('pointercancel', cancel);
+
+    function eraseAt(pt) {
       var ex = pt[0], ey = pt[1];
       var R = 20;
       var before = strokes.length;
       strokes = strokes.filter(function(s) {
-        if (s.pageIndex !== pageIndex) return true;
         return !s.points.some(function(p) {
           var dx = p[0] - ex, dy = p[1] - ey;
           return dx * dx + dy * dy < R * R;
         });
       });
-      if (strokes.length !== before) redrawPage(pageIndex);
+      if (strokes.length !== before) redrawAll();
     }
 
-    function drawStroke(ctx, s) {
+    function drawStroke(s) {
       if (s.points.length < 2) return;
       ctx.beginPath();
       ctx.strokeStyle = s.color;
@@ -466,24 +405,16 @@
       ctx.stroke();
     }
 
-    function redrawPage(pi) {
-      if (pi >= pages.length) return;
-      var pg = pages[pi];
-      pg.ctx.clearRect(0, 0, pg.annCanvas.width, pg.annCanvas.height);
-      strokes.filter(function(s) { return s.pageIndex === pi; }).forEach(function(s) {
-        drawStroke(pg.ctx, s);
-      });
-    }
-
     function redrawAll() {
-      pages.forEach(function(_, i) { redrawPage(i); });
+      ctx.clearRect(0, 0, annCanvas.width, annCanvas.height);
+      strokes.forEach(function(s) { drawStroke(s); });
     }
 
     // ── WebSocket ──────────────────────────────────────────────────────────
     function connectWS() {
-      if (!pdfId) return;
+      if (!imgId) return;
       var scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-      wsConn = new WebSocket(scheme + '://' + location.host + '/ws/annotate?pdf=' + encodeURIComponent(pdfId));
+      wsConn = new WebSocket(scheme + '://' + location.host + '/ws/annotate-img?img=' + encodeURIComponent(imgId));
       wsConn.onopen  = function() { setStatus('Verbunden', true); };
       wsConn.onclose = function() {
         setStatus('Getrennt – reconnect…', false);
@@ -495,8 +426,7 @@
           var msg = JSON.parse(e.data);
           if (msg.type === 'stroke' && msg.stroke) {
             strokes.push(msg.stroke);
-            var pi = msg.stroke.pageIndex || 0;
-            if (pi < pages.length) drawStroke(pages[pi].ctx, msg.stroke);
+            drawStroke(ctx, msg.stroke);
           } else if (msg.type === 'undo') {
             strokes.pop();
             redrawAll();
@@ -520,7 +450,7 @@
     // ── Persistence ────────────────────────────────────────────────────────
     async function loadAnnotations() {
       try {
-        var r = await fetch('/api/annotations?pdf=' + encodeURIComponent(pdfId));
+        var r = await fetch('/api/annotations?img=' + encodeURIComponent(imgId));
         if (!r.ok) return;
         var data = await r.json();
         strokes = data.strokes || [];
@@ -529,9 +459,9 @@
     }
 
     async function saveAnnotations() {
-      if (!pdfId) return;
+      if (!imgId) return;
       try {
-        await fetch('/api/annotations?pdf=' + encodeURIComponent(pdfId), {
+        await fetch('/api/annotations?img=' + encodeURIComponent(imgId), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ strokes: strokes }),
@@ -539,68 +469,25 @@
       } catch (_) {}
     }
 
-    // ── PDF rendering ──────────────────────────────────────────────────────
-    async function loadPDF() {
-      if (!pdfId) {
-        setStatus('Kein PDF angegeben', false);
-        return;
-      }
-
-      pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf-js/pdf.worker.min.js';
-
-      setStatus('Lade PDF…', false);
-      try {
-        var pdf = await pdfjsLib.getDocument(pdfUrl).promise;
-        var container = document.getElementById('pages');
-        var maxW = Math.min(window.innerWidth - 24, 900);
-
-        for (var i = 1; i <= pdf.numPages; i++) {
-          var pdfPage    = await pdf.getPage(i);
-          var viewport1  = pdfPage.getViewport({ scale: 1 });
-          var scale      = maxW / viewport1.width;
-          var viewport   = pdfPage.getViewport({ scale: scale });
-
-          var wrap = document.createElement('div');
-          wrap.className = 'page-wrap';
-
-          var pdfCanvas = document.createElement('canvas');
-          pdfCanvas.className = 'pdf-canvas';
-          pdfCanvas.width  = Math.round(viewport.width);
-          pdfCanvas.height = Math.round(viewport.height);
-
-          var annCanvas = document.createElement('canvas');
-          annCanvas.className = 'ann-canvas';
-          annCanvas.width  = pdfCanvas.width;
-          annCanvas.height = pdfCanvas.height;
-
-          wrap.appendChild(pdfCanvas);
-          wrap.appendChild(annCanvas);
-          container.appendChild(wrap);
-
-          var ctx = annCanvas.getContext('2d');
-          var pageIndex = i - 1;
-          pages.push({ pdfCanvas: pdfCanvas, annCanvas: annCanvas, ctx: ctx });
-          attachPointer(annCanvas, pageIndex);
-
-          await pdfPage.render({
-            canvasContext: pdfCanvas.getContext('2d'),
-            viewport: viewport,
-          }).promise;
-        }
-
-        if (pdf.numPages > 1) {
-          pageCounter.textContent = pdf.numPages + ' Seiten';
-        }
+    // ── Load image ─────────────────────────────────────────────────────────
+    if (!imgId) {
+      setStatus('Kein Bild angegeben', false);
+    } else {
+      setStatus('Lade Bild…', false);
+      imageEl.onload = function() {
+        annCanvas.width  = imageEl.naturalWidth;
+        annCanvas.height = imageEl.naturalHeight;
+        annCanvas.style.pointerEvents = 'auto';
+        annCanvas.style.touchAction = 'none';
         setStatus('Bereit', true);
-        await loadAnnotations();
+        loadAnnotations();
         connectWS();
-      } catch (err) {
-        setStatus('Fehler: ' + err.message, false);
-        showToast('PDF konnte nicht geladen werden');
-      }
-    }
-
-    loadPDF();
+      };
+      imageEl.onerror = function() {
+        setStatus('Bild konnte nicht geladen werden', false);
+        showToast('Bild nicht gefunden');
+      };
+      imageEl.src = imgUrl;
     }
   </script>
 </body>
